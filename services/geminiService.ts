@@ -9,15 +9,15 @@ Nhiệm vụ: Phân tích đề bài và trả về JSON để vẽ hình.
 
 --- QUY TẮC JSON (BẮT BUỘC) ---
 1. "points": [{ "id": "A", "x": 500, "y": 200, "label": "A" }, ...]
-   - Tọa độ Canvas: 1000x800. Tâm (500, 400).
-   - Đặt tâm hình chính (như tâm đường tròn O) tại (500, 400).
+   - Canvas 1000x800. Tâm (500, 400).
+   - Đặt tâm hình chính (O) tại (500, 400).
 2. "segments": [{ "startPointId": "A", "endPointId": "B" }, ...]
-   - QUAN TRỌNG: Phải nối TẤT CẢ các điểm có quan hệ với nhau (cạnh tam giác, đường cao, bán kính, tiếp tuyến...).
+   - QUAN TRỌNG: Phải nối các điểm thành hình (Tam giác, Tứ giác, Đường cao...).
 3. "circles": [{ "centerId": "O", "radiusPointId": "A" }] 
-   - Nếu đề bài có "Đường tròn (O)", BẮT BUỘC phải trả về mảng "circles".
-4. "explanation": "Giải thích ngắn gọn các bước dựng hình và logic toán học..."
+   - Nếu có "Đường tròn (O)", BẮT BUỘC trả về object trong mảng "circles".
+4. "explanation": "Giải thích ngắn gọn..."
 
-KHÔNG sử dụng Markdown. Chỉ trả về JSON thuần.
+KHÔNG dùng Markdown. Chỉ trả về JSON thuần.
 `;
 
 function cleanAndParseJSON(text: string): any {
@@ -55,13 +55,27 @@ function removeVietnameseTones(str: string): string {
     return str.toUpperCase();
 }
 
-// --- BỘ NÃO PHÂN TÍCH VĂN BẢN (Improved) ---
+// --- BỘ NÃO PHÂN TÍCH VĂN BẢN (HEURISTIC ENGINE) ---
 function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
     if (!geometry.points) return;
     
     const text = removeVietnameseTones(problemText); 
     const points = geometry.points as any[];
     
+    // 1. AUTO-LABELING (Quan trọng: Gán nhãn nếu AI quên)
+    // Nếu điểm chưa có label, gán A, B, C... để heuristic có thể hoạt động
+    let labelIndex = 0;
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    points.forEach(p => {
+        if (!p.label || p.label.trim() === "") {
+            // Tìm label chưa dùng
+            while (points.some(existing => existing.label === alphabet[labelIndex])) {
+                labelIndex = (labelIndex + 1) % alphabet.length;
+            }
+            p.label = alphabet[labelIndex];
+        }
+    });
+
     // Map Label -> ID
     const labelMap: Record<string, string> = {};
     points.forEach(p => {
@@ -89,8 +103,7 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         }
     };
 
-    // 1. TỰ ĐỘNG VẼ ĐƯỜNG TRÒN (QUAN TRỌNG)
-    // Quét: "DUONG TRON (O)" hoặc "TAM O"
+    // --- A. TỰ ĐỘNG VẼ ĐƯỜNG TRÒN ---
     const circleRegex = /(?:DUONG TRON|D\.TRON)\s*\(?([A-Z])\)?|TAM\s+([A-Z])|\(([A-Z])\)/g;
     let cMatch;
     const centersProcessed = new Set<string>();
@@ -103,12 +116,10 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
             centersProcessed.add(centerId);
             if (!geometry.circles) geometry.circles = [];
             
-            // Check nếu AI chưa vẽ
             const hasCircle = geometry.circles.some((c: any) => c.centerId === centerId);
             if (!hasCircle) {
-                // Heuristic: Tìm điểm xa nhất có vẻ là bán kính (thường < 400px)
-                // Ví dụ: Đề bài "Cho đường tròn (O), điểm M nằm ngoài..." -> O nối với điểm tiếp xúc
-                let radius = 120; // Mặc định
+                // Tìm bán kính hợp lý
+                let radius = 120; 
                 let radiusPointId = undefined;
                 const centerPt = points.find(p => p.id === centerId);
                 
@@ -122,14 +133,11 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
                             }
                         }
                     });
-                    // Sắp xếp giảm dần, lấy điểm có khoảng cách hợp lý nhất (không quá xa)
-                    // Thường các điểm trên đường tròn sẽ có khoảng cách xấp xỉ nhau.
+                    // Ưu tiên điểm có khoảng cách xuất hiện nhiều lần (bán kính)
+                    // Hoặc điểm xa nhất trong phạm vi hợp lý
                     if (candidates.length > 0) {
-                        // Thử tìm cụm điểm (cluster) có khoảng cách gần nhau -> đó là bán kính
-                        candidates.sort((a,b) => a.dist - b.dist);
-                        // Lấy điểm trung vị hoặc điểm xuất hiện nhiều nhất? 
-                        // Đơn giản: Lấy điểm đầu tiên trong nhóm lớn nhất (nếu có A, B thuộc đường tròn thì OA ~ OB)
-                        radiusPointId = candidates[0].id; // Lấy điểm gần nhất làm tham chiếu (thường là bán kính)
+                        candidates.sort((a,b) => b.dist - a.dist); // Xa nhất trước
+                        radiusPointId = candidates[0].id;
                         radius = candidates[0].dist;
                     }
                 }
@@ -146,31 +154,65 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         }
     }
 
-    // 2. TỰ ĐỘNG NỐI CÁC CẶP ĐIỂM XUẤT HIỆN TRONG VĂN BẢN (Aggressive Connecting)
-    // Tìm tất cả cặp 2 chữ cái in hoa đi liền: "AB", "OM", "MA", "CD"...
-    // Đây là cách hiệu quả nhất để bắt "đoạn thẳng AB", "cạnh OM", "vectơ MA"
+    // --- B. QUÉT MẠNH MẼ CÁC CẶP ĐIỂM (AB, A và B, A đến B) ---
+    // Pattern 1: AB, OM (Dính liền)
     const pairRegex = /\b([A-Z])([A-Z])\b/g;
     let pMatch;
     while ((pMatch = pairRegex.exec(text)) !== null) {
         const p1 = labelMap[pMatch[1]];
         const p2 = labelMap[pMatch[2]];
-        // Chỉ nối nếu cả 2 điểm đều tồn tại trong danh sách Points
-        if (p1 && p2) {
-            ensureSegment(p1, p2);
+        if (p1 && p2) ensureSegment(p1, p2);
+    }
+
+    // Pattern 2: A, B hoặc A va B
+    const loosePairRegex = /\b([A-Z])\s*(?:VA|AND|,|-|TO)\s*([A-Z])\b/g;
+    while ((pMatch = loosePairRegex.exec(text)) !== null) {
+        const p1 = labelMap[pMatch[1]];
+        const p2 = labelMap[pMatch[2]];
+        if (p1 && p2) ensureSegment(p1, p2);
+    }
+
+    // --- C. XỬ LÝ ĐA GIÁC ---
+    const polyRegex = /(?:TAM GIAC|TU GIAC|HINH CHU NHAT|HINH VUONG)\s+([A-Z\s]+)/g;
+    let polyMatch;
+    while ((polyMatch = polyRegex.exec(text)) !== null) {
+        // Lấy chuỗi label "A B C" hoặc "ABC"
+        const rawLabels = polyMatch[1].replace(/\s/g, "");
+        if (rawLabels.length >= 3) {
+            for (let i = 0; i < rawLabels.length; i++) {
+                const l1 = rawLabels[i];
+                const l2 = rawLabels[(i + 1) % rawLabels.length];
+                const p1 = labelMap[l1];
+                const p2 = labelMap[l2];
+                if (p1 && p2) ensureSegment(p1, p2);
+            }
         }
     }
 
-    // 3. XỬ LÝ TAM GIÁC / TỨ GIÁC (Để đảm bảo khép kín)
-    const polyRegex = /(?:TAM GIAC|TU GIAC|HINH CHU NHAT|HINH VUONG)\s+([A-Z]+)/g;
-    let polyMatch;
-    while ((polyMatch = polyRegex.exec(text)) !== null) {
-        const labels = polyMatch[1];
-        for (let i = 0; i < labels.length; i++) {
-            const l1 = labels[i];
-            const l2 = labels[(i + 1) % labels.length];
-            const p1 = labelMap[l1];
-            const p2 = labelMap[l2];
-            if (p1 && p2) ensureSegment(p1, p2);
+    // --- D. SAFETY NET (LƯỚI AN TOÀN CUỐI CÙNG) ---
+    // Nếu sau tất cả mà KHÔNG CÓ đoạn thẳng nào, nối đại các điểm thành vòng tròn
+    // Điều này đảm bảo hình không bị trống trơn
+    const segmentCount = geometry.segments ? geometry.segments.length : 0;
+    if (segmentCount === 0 && points.length >= 2) {
+        // Sắp xếp điểm theo góc để tạo đa giác không tự cắt (convex hull đơn giản)
+        // Lấy tâm trung bình
+        const cx = points.reduce((s,p) => s + p.x, 0) / points.length;
+        const cy = points.reduce((s,p) => s + p.y, 0) / points.length;
+        
+        // Sort
+        const sortedPoints = [...points].sort((a, b) => {
+            const angA = Math.atan2(a.y - cy, a.x - cx);
+            const angB = Math.atan2(b.y - cy, b.x - cx);
+            return angA - angB;
+        });
+
+        for (let i = 0; i < sortedPoints.length; i++) {
+            const p1 = sortedPoints[i];
+            const p2 = sortedPoints[(i + 1) % sortedPoints.length];
+            // Chỉ nối nếu là chuỗi kín hoặc số điểm ít
+            if (points.length <= 5 || i < points.length - 1) {
+                 ensureSegment(p1.id, p2.id);
+            }
         }
     }
 }
@@ -203,14 +245,6 @@ function resolveGeometryReferences(geometry: any) {
         geometry.circles.forEach((c: any) => {
             c.centerId = resolve(c.centerId);
             if(c.radiusPointId) c.radiusPointId = resolve(c.radiusPointId);
-        });
-    }
-    
-    if (geometry.angles) {
-        geometry.angles.forEach((a: any) => {
-            a.centerId = resolve(a.centerId);
-            a.point1Id = resolve(a.point1Id);
-            a.point2Id = resolve(a.point2Id);
         });
     }
 }
@@ -249,12 +283,12 @@ function scaleAndCenterGeometry(geometry: any) {
 
 function normalizeAndResolve(result: any, originalText: string, resolvePromise: (value: AIResponse | PromiseLike<AIResponse>) => void) {
     if (!result.geometry && result.points) {
-        result = { geometry: result, explanation: result.explanation || "Đã dựng hình xong." };
+        result = { geometry: result, explanation: result.explanation || "Đã dựng hình." };
     }
     if (!result.geometry) result.geometry = { points: [], segments: [], circles: [], angles: [], texts: [] };
     
-    // Đảm bảo explanation không bị mất
-    if (!result.explanation) result.explanation = "Đã phân tích và dựng hình theo đề bài.";
+    // Fallback explanation
+    if (!result.explanation) result.explanation = "Hình vẽ được tạo dựa trên phân tích đề bài.";
 
     const g = result.geometry;
     ['points', 'segments', 'circles', 'texts', 'angles', 'ellipses', 'cylinders', 'cones', 'spheres'].forEach(key => {
@@ -266,7 +300,7 @@ function normalizeAndResolve(result: any, originalText: string, resolvePromise: 
 
     resolveGeometryReferences(g);
     
-    // CHẠY HEURISTIC MỚI (Aggressive)
+    // HEURISTIC ENGINE: Fill in the gaps
     enhanceGeometryWithTextAnalysis(g, originalText);
     
     resolveGeometryReferences(g);
@@ -288,13 +322,11 @@ export const parseGeometryProblem = async (
   
   const promptText = `
     Đề bài: "${text}"
-    
-    YÊU CẦU DỰNG HÌNH:
-    1. Points: Tính toán tọa độ hợp lý để hình vẽ cân đối (Tâm Canvas 500,400).
-    2. Segments: Nối các cặp điểm liên quan (ví dụ: AB, OM, MA...).
-    3. Circles: Nếu có đường tròn, trả về mảng "circles".
-    4. Explanation: Viết lời giải thích ngắn gọn về cách dựng.
-    
+    YÊU CẦU:
+    1. Points: Tọa độ hợp lý (Tâm 500,400).
+    2. Segments: Nối các điểm.
+    3. Circles: Nếu có đường tròn, trả về "circles".
+    4. Explanation: Giải thích.
     Trả về JSON.
   `;
   parts.push({ text: promptText });
