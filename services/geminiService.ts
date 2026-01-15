@@ -1,7 +1,7 @@
 
 import { AIResponse } from "../types";
 
-// --- KHÔNG DÙNG THƯ VIỆN @GOOGLE/GENAI, TỰ ĐỊNH NGHĨA ENUM ---
+// --- TỰ ĐỊNH NGHĨA TYPE (Thay vì import từ @google/genai) ---
 const Type = {
   OBJECT: 'OBJECT',
   ARRAY: 'ARRAY',
@@ -10,7 +10,7 @@ const Type = {
   BOOLEAN: 'BOOLEAN'
 };
 
-// --- SYSTEM INSTRUCTION (BẢN GỐC CHUẨN OLYMPIAD) ---
+// --- GIỮ NGUYÊN SYSTEM INSTRUCTION CHUẨN TỪ FILE BẠN CUNG CẤP ---
 const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D) cấp Olympiad.
 Nhiệm vụ: Phân tích đề bài, giải toán và sinh dữ liệu JSON để vẽ lên canvas SVG (1000x800).
@@ -47,7 +47,7 @@ Trả về JSON tuân thủ schema. Đặc biệt chú ý:
 - "explanation": Giải thích ngắn gọn cách dựng (VD: "Dựng hình chóp S.ABCD với đáy là hình bình hành...").
 `;
 
-// --- SCHEMA CẤU TRÚC DỮ LIỆU ---
+// --- GIỮ NGUYÊN SCHEMA CHUẨN TỪ FILE BẠN CUNG CẤP ---
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
@@ -144,7 +144,6 @@ export const parseGeometryProblem = async (
   mimeType: string = "image/jpeg"
 ): Promise<AIResponse> => {
   
-  // 1. CHUẨN BỊ NỘI DUNG (PARTS)
   const parts: any[] = [];
   
   if (base64Image) {
@@ -168,14 +167,13 @@ export const parseGeometryProblem = async (
   
   parts.push({ text: promptText });
 
-  // 2. GỬI QUA CẦU NỐI (POST MESSAGE BRIDGE)
+  // --- CƠ CHẾ CẦU NỐI (BRIDGE) ---
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      // Tăng Timeout lên 150s vì model 3-pro cần thời gian suy nghĩ (Thinking)
-      const TIMEOUT = 150000; 
+      // Model 3-Pro + Thinking cần thời gian rất lâu để suy luận, tăng timeout lên 160s
+      const TIMEOUT = 160000; 
 
       const handleMessage = (event: MessageEvent) => {
-          // Lọc tin nhắn từ AI Studio Bridge
           if (event.data?.type === 'GEMINI_RESULT' && event.data?.requestId === requestId) {
               window.removeEventListener('message', handleMessage);
               clearTimeout(timeoutId);
@@ -184,13 +182,12 @@ export const parseGeometryProblem = async (
                   const rawPayload = event.data.payload;
                   let result;
                   
-                  // Xử lý chuỗi JSON (loại bỏ markdown block nếu có)
                   let jsonString = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
                   jsonString = jsonString.replace(/```json|```/g, '').trim();
                   
                   result = JSON.parse(jsonString);
                   
-                  // Helper đảm bảo mảng tồn tại (Logic quan trọng để tránh lỗi render)
+                  // Helper đảm bảo mảng tồn tại (Logic gốc từ file bạn cung cấp)
                   const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
                   if (result.geometry) {
                       ensureArray(result.geometry, 'points');
@@ -220,27 +217,22 @@ export const parseGeometryProblem = async (
 
       const timeoutId = setTimeout(() => {
           window.removeEventListener('message', handleMessage);
-          reject(new Error("Quá thời gian chờ (150s). Bài toán quá phức tạp hoặc AI đang bận suy nghĩ."));
+          reject(new Error("Quá thời gian chờ (160s). Bài toán đang được suy luận sâu, vui lòng thử lại."));
       }, TIMEOUT);
 
-      // GỬI LỆNH ĐI (PAYLOAD)
-      // Quan trọng: Gửi đúng cấu trúc mà Parent Frame mong đợi để gọi API
+      // --- GỬI POST MESSAGE ---
+      // Quan trọng: Gửi đúng Model và Thinking Config như file gốc yêu cầu
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
           payload: {
-              // BẮT BUỘC: Dùng gemini-3-pro-preview để có tính năng suy luận
               model: 'gemini-3-pro-preview', 
-              
               contents: { parts },
-              
-              // Cấu hình Config chui vào GenerationConfig
               config: {
                   systemInstruction: SYSTEM_INSTRUCTION,
+                  thinkingConfig: { thinkingBudget: 16000 }, // Cấu hình Thinking quan trọng
                   responseMimeType: "application/json",
                   responseSchema: RESPONSE_SCHEMA,
-                  // BẮT BUỘC: Thinking Budget để AI "suy nghĩ" trước khi vẽ -> Chất lượng cao
-                  thinkingConfig: { thinkingBudget: 16000 } 
               }
           }
       }, '*');
