@@ -1,7 +1,7 @@
 
 import { AIResponse } from "../types";
 
-// --- TỰ ĐỊNH NGHĨA TYPE (Thay vì import từ @google/genai) ---
+// --- TỰ ĐỊNH NGHĨA TYPE ---
 const Type = {
   OBJECT: 'OBJECT',
   ARRAY: 'ARRAY',
@@ -10,44 +10,21 @@ const Type = {
   BOOLEAN: 'BOOLEAN'
 };
 
-// --- GIỮ NGUYÊN SYSTEM INSTRUCTION CHUẨN TỪ FILE BẠN CUNG CẤP ---
 const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D) cấp Olympiad.
 Nhiệm vụ: Phân tích đề bài, giải toán và sinh dữ liệu JSON để vẽ lên canvas SVG (1000x800).
 
 --- QUY TẮC DỰNG HÌNH & TỌA ĐỘ (BẮT BUỘC) ---
-
 1. TỌA ĐỘ VÀ BỐ CỤC:
    - Trung tâm canvas là (500, 400).
    - Tam giác/Đa giác: Nên đặt trọng tâm gần (500, 450). Cạnh đáy nên nằm ngang.
-   - Hình không gian (Trụ, Nón, Lăng trụ, Chóp): Đặt đáy ở khoảng y=600, đỉnh ở y=200.
-   - Trục tọa độ 3D (nếu cần): O(500, 500), Ox hướng xuống trái, Oy hướng phải, Oz hướng lên.
-
-2. QUY TẮC 2D (Tam giác, Đường tròn, Tứ giác):
-   - Tam giác ABC: A thường ở trên đỉnh, B bên trái, C bên phải.
-   - Đường cao/Trung tuyến/Phân giác: Tính toán giao điểm chính xác (Trực tâm, Trọng tâm, Tâm nội tiếp).
-   - Đường tròn ngoại tiếp/nội tiếp: Phải tính đúng tâm và bán kính.
-
-3. QUY TẮC 3D (Hình không gian):
-   - Phép chiếu: Sử dụng phép chiếu song song (oblique projection).
-   - Nét đứt (Dashed Lines): CÁC CẠNH BỊ KHUẤT PHẢI CÓ 'style': 'dashed'.
-     - Ví dụ: Hình chóp S.ABCD đáy vuông, thì cạnh AD và DC thường bị khuất (nếu nhìn từ phía trước).
-   - Đáy tròn (Trụ, Nón): Dùng 'ellipses' để vẽ đáy. Tỉ lệ rx/ry thường là 3:1 hoặc 4:1 để tạo cảm giác phối cảnh.
-     - Ví dụ: Đáy trụ tâm (500, 600), rx=100, ry=30. Nửa cung sau có thể cần chia thành 2 segment cong hoặc vẽ đè segment nét đứt (nhưng đơn giản nhất là vẽ ellipse nét liền hoặc đứt tùy ngữ cảnh).
-     - Tốt nhất với đáy trụ/nón: Vẽ 1 ellipse đáy (thường là nét đứt nếu bị che, hoặc liền nếu nhìn từ trên). Nếu cần tách biệt nửa liền nửa đứt, hãy ưu tiên vẽ ellipse liền cho đơn giản, hoặc dùng 2 cung (không hỗ trợ trong schema hiện tại nên dùng ellipse style 'solid').
-
-4. LOGIC TOÁN HỌC:
-   - Vuông góc: Nếu đề bài cho vuông góc, hãy tính tích vô hướng vector = 0.
-   - Tỷ lệ: Định lý Talet, Menelaus phải chính xác.
-
---- CẤU TRÚC JSON ---
-Trả về JSON tuân thủ schema. Đặc biệt chú ý:
-- "ellipses": Dùng cho đáy hình trụ, nón, cầu.
-- "segments": Chứa thuộc tính "style": "dashed" cho đường khuất.
-- "explanation": Giải thích ngắn gọn cách dựng (VD: "Dựng hình chóp S.ABCD với đáy là hình bình hành...").
+   - Hình không gian: Đặt đáy ở khoảng y=600, đỉnh ở y=200.
+2. QUY TẮC 3D:
+   - Các cạnh bị khuất PHẢI có thuộc tính "style": "dashed".
+3. TRẢ VỀ JSON:
+   - Chỉ trả về JSON thuần túy, không kèm markdown (nếu có thể).
 `;
 
-// --- GIỮ NGUYÊN SCHEMA CHUẨN TỪ FILE BẠN CUNG CẤP ---
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
@@ -138,6 +115,34 @@ const RESPONSE_SCHEMA = {
   required: ["geometry", "explanation"]
 };
 
+// Hàm trích xuất JSON thông minh từ văn bản hỗn độn
+function extractJSONFromText(text: string): any {
+    try {
+        // 1. Thử parse trực tiếp
+        return JSON.parse(text);
+    } catch (e) {
+        // 2. Tìm kiếm cặp ngoặc nhọn ngoài cùng {}
+        const firstOpen = text.indexOf('{');
+        const lastClose = text.lastIndexOf('}');
+        
+        if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+            const potentialJson = text.substring(firstOpen, lastClose + 1);
+            try {
+                return JSON.parse(potentialJson);
+            } catch (e2) {
+                // Nếu vẫn lỗi, thử clean các ký tự lạ
+                try {
+                    const cleaned = potentialJson.replace(/[\u0000-\u001F]+/g, ""); 
+                    return JSON.parse(cleaned);
+                } catch(e3) {
+                    console.error("Failed to extract JSON", e3);
+                }
+            }
+        }
+        throw new Error("Không tìm thấy cấu trúc JSON hợp lệ trong phản hồi.");
+    }
+}
+
 export const parseGeometryProblem = async (
   text: string,
   base64Image?: string,
@@ -155,23 +160,18 @@ export const parseGeometryProblem = async (
   const promptText = `
     [GEOMETRY SOLVER REQUEST]
     Đề bài: "${text}"
-    
     Yêu cầu:
-    1. Phân tích loại hình:
-       - 2D: Tam giác (thường/vuông/cân/đều), Đường tròn, Hình chữ nhật...
-       - 3D: Hình chóp, Lăng trụ, Hình trụ (Cylinder), Hình nón (Cone), Hình cầu...
-    2. Tính toán tọa độ các điểm sao cho hình vẽ cân đối trên Canvas 1000x800.
-    3. Xác định các đường nét đứt (hidden lines) cho hình 3D.
-    4. Trả về JSON đầy đủ các đối tượng.
+    1. Phân tích đề bài.
+    2. Tính toán tọa độ (Canvas 1000x800).
+    3. Trả về JSON đúng cấu trúc đã định nghĩa.
   `;
   
   parts.push({ text: promptText });
 
-  // --- CƠ CHẾ CẦU NỐI (BRIDGE) ---
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      // Model 3-Pro + Thinking cần thời gian rất lâu để suy luận, tăng timeout lên 160s
-      const TIMEOUT = 160000; 
+      // Tăng timeout lên 3 phút cho các bài toán phức tạp
+      const TIMEOUT = 180000; 
 
       const handleMessage = (event: MessageEvent) => {
           if (event.data?.type === 'GEMINI_RESULT' && event.data?.requestId === requestId) {
@@ -180,44 +180,26 @@ export const parseGeometryProblem = async (
               
               try {
                   const payload = event.data.payload;
-                  let jsonString = '';
+                  let rawText = '';
 
-                  // TRƯỜNG HỢP 1: Payload là Object phản hồi từ Gemini API (chứa candidates)
-                  if (payload && typeof payload === 'object' && payload.candidates && Array.isArray(payload.candidates) && payload.candidates.length > 0) {
-                      const parts = payload.candidates[0].content?.parts;
-                      if (parts && Array.isArray(parts) && parts.length > 0) {
-                          jsonString = parts[0].text || '';
-                      }
-                  } 
-                  // TRƯỜNG HỢP 2: Payload đã là chuỗi Text (một số bridge trả về text trực tiếp)
-                  else if (typeof payload === 'string') {
-                      jsonString = payload;
-                  }
-                  // TRƯỜNG HỢP 3: Payload là Object JSON kết quả (đã parse sẵn hoặc cấu trúc khác)
-                  else {
-                      jsonString = JSON.stringify(payload);
+                  // Trích xuất text từ các cấu trúc phản hồi khác nhau
+                  if (typeof payload === 'string') {
+                      rawText = payload;
+                  } else if (payload?.candidates?.[0]?.content?.parts?.[0]?.text) {
+                      rawText = payload.candidates[0].content.parts[0].text;
+                  } else {
+                      rawText = JSON.stringify(payload);
                   }
 
-                  // Làm sạch chuỗi JSON (loại bỏ markdown block ```json ... ```)
-                  jsonString = jsonString.replace(/```json|```/g, '').trim();
+                  // Dùng hàm trích xuất thông minh
+                  const result = extractJSONFromText(rawText);
                   
-                  // Parse JSON
-                  let result;
-                  try {
-                      result = JSON.parse(jsonString);
-                  } catch (e) {
-                      console.warn("Raw JSON Parse Failed, trying to fix:", jsonString.substring(0, 100));
-                      throw new Error("Không thể đọc dữ liệu JSON từ AI.");
-                  }
-                  
-                  // Đảm bảo cấu trúc Geometry tồn tại
+                  // Đảm bảo cấu trúc Geometry luôn tồn tại
                   if (!result.geometry) {
                       result.geometry = { points: [], segments: [], circles: [], ellipses: [], angles: [], texts: [], lines: [] };
                   }
                   
-                  // Helper đảm bảo các mảng con tồn tại để tránh lỗi "Cannot read properties of undefined"
                   const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
-                  
                   ensureArray(result.geometry, 'points');
                   ensureArray(result.geometry, 'segments');
                   ensureArray(result.geometry, 'circles');
@@ -228,15 +210,15 @@ export const parseGeometryProblem = async (
                   
                   resolve(result);
               } catch (error) {
-                  console.error("Lỗi xử lý kết quả từ AI:", error);
-                  reject(new Error("Dữ liệu trả về từ AI bị lỗi hoặc không đúng định dạng."));
+                  console.error("Lỗi xử lý kết quả AI:", error);
+                  reject(new Error("AI trả về dữ liệu lỗi, không thể dựng hình."));
               }
           }
 
           if (event.data?.type === 'GEMINI_ERROR' && event.data?.requestId === requestId) {
               window.removeEventListener('message', handleMessage);
               clearTimeout(timeoutId);
-              reject(new Error(event.data.error || "Có lỗi xảy ra từ phía AI Studio."));
+              reject(new Error(event.data.error || "Có lỗi xảy ra kết nối AI."));
           }
       };
 
@@ -244,19 +226,19 @@ export const parseGeometryProblem = async (
 
       const timeoutId = setTimeout(() => {
           window.removeEventListener('message', handleMessage);
-          reject(new Error("Quá thời gian chờ (160s). Bài toán đang được suy luận sâu, vui lòng thử lại."));
+          reject(new Error("Hết thời gian chờ (3 phút). Bài toán quá phức tạp hoặc kết nối bị gián đoạn."));
       }, TIMEOUT);
 
-      // --- GỬI POST MESSAGE ---
+      // Gửi yêu cầu qua Bridge
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
           payload: {
               model: 'gemini-3-pro-preview', 
-              contents: [{ parts: parts }], // Cấu trúc chuẩn: Mảng Content chứa Parts
+              contents: [{ parts: parts }],
               config: {
                   systemInstruction: SYSTEM_INSTRUCTION,
-                  thinkingConfig: { thinkingBudget: 16000 }, // Cấu hình Thinking
+                  thinkingConfig: { thinkingBudget: 16000 },
                   responseMimeType: "application/json",
                   responseSchema: RESPONSE_SCHEMA,
               }
