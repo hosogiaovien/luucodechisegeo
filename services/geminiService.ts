@@ -2,7 +2,7 @@
 import { AIResponse, GeometryData, Point } from "../types";
 import { generateId } from "../utils/geometry";
 
-// --- HỆ THỐNG CHỈ DẪN NÂNG CẤP (SUPER PROMPT V3) ---
+// --- HỆ THỐNG CHỈ DẪN NÂNG CẤP (SUPER PROMPT V4) ---
 const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Pro" - Chuyên gia hình học và thị giác máy tính.
 Nhiệm vụ: Chuyển đổi đề bài (Text hoặc Hình ảnh) thành JSON cấu trúc để vẽ lên Canvas 1000x800.
@@ -18,33 +18,59 @@ Nhiệm vụ: Chuyển đổi đề bài (Text hoặc Hình ảnh) thành JSON c
     "spheres": [{ "centerId": "O", "radiusPointId": "M" }],
     "angles": [{ "centerId": "A", "point1Id": "B", "point2Id": "C", "isRightAngle": true }]
   },
-  "explanation": "Giải thích..."
+  "explanation": "Giải thích ngắn gọn..."
 }
 
 --- QUY TẮC QUAN TRỌNG ---
-1. **HÌNH ẢNH**: Nếu đầu vào là ảnh, hãy cố gắng xác định mọi đường nối. Nếu thấy một đa giác, hãy nối khép kín.
-2. **KÍCH THƯỚC**: Hãy dùng hệ tọa độ lớn (x từ 0-1000, y từ 0-800). ĐỪNG dùng số nhỏ (0-1).
-3. **ĐỐI TƯỢNG**: 
+1. **OUTPUT FORMAT**: Trả về duy nhất một khối JSON hợp lệ. KHÔNG dùng markdown nếu có thể. Key phải để trong ngoặc kép (ví dụ "x": 10).
+2. **HÌNH ẢNH**: Nếu đầu vào là ảnh, hãy cố gắng xác định mọi đường nối. Nếu thấy một đa giác, hãy nối khép kín.
+3. **KÍCH THƯỚC**: Hãy dùng hệ tọa độ lớn (x từ 0-1000, y từ 0-800).
+4. **ĐỐI TƯỢNG**: 
    - Thấy "Hình nón" -> tạo "cones".
    - Thấy "Hình trụ" -> tạo "cylinders".
    - Thấy "Đường tròn" -> tạo "circles".
-   - Thấy "Tiếp tuyến" -> vẽ đoạn thẳng vuông góc bán kính.
 `;
 
 function cleanAndParseJSON(text: string): any {
     if (!text || typeof text !== 'string') return null;
+    
+    // 1. Loại bỏ Markdown code block
     let clean = text.replace(/```json/gi, "").replace(/```/g, "");
+    
+    // 2. Tìm khối JSON chính xác nhất (từ { đầu tiên đến } cuối cùng)
     const firstOpen = clean.indexOf('{');
     const lastClose = clean.lastIndexOf('}');
+    
     if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
         clean = clean.substring(firstOpen, lastClose + 1);
+    } else {
+        console.error("AI Output không chứa JSON hợp lệ:", text);
+        return null;
     }
+
     try {
-        clean = clean.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
+        // Parse thử
         return JSON.parse(clean);
     } catch (e) {
-        console.error("JSON Parse Error", e);
-        return null;
+        console.warn("JSON Parse chuẩn thất bại, đang thử sửa lỗi cú pháp...", e);
+        try {
+            // --- CƠ CHẾ TỰ SỬA LỖI JSON ---
+            
+            // 1. Xóa dấu phẩy thừa ở cuối mảng/object (VD: [1,2,] -> [1,2])
+            clean = clean.replace(/,\s*([\]}])/g, '$1');
+            
+            // 2. Thêm ngoặc kép cho key chưa có ngoặc (VD: { x: 10 } -> { "x": 10 })
+            // Regex: Tìm (dấu { hoặc ,) (khoảng trắng) (từ khóa) (khoảng trắng) (dấu :)
+            clean = clean.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+            
+            // 3. Thay thế dấu nháy đơn thành nháy kép (nếu AI dùng sai)
+            clean = clean.replace(/'/g, '"');
+
+            return JSON.parse(clean);
+        } catch (e2) {
+            console.error("Không thể sửa lỗi JSON. Raw text:", clean);
+            return null;
+        }
     }
 }
 
@@ -116,8 +142,7 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         }
     }
 
-    // 2. Logic Hình Học Cao Cấp (Nón, Trụ, Cầu, Đường Tròn)
-    // Nếu trong đề có từ khóa nhưng AI chưa tạo object, ta tự tạo
+    // 2. Logic Hình Học Cao Cấp
     
     // a. Đường tròn tâm O
     const circleRegex = /DUONG TRON (?:TAM )?([A-Z])/g;
@@ -137,11 +162,9 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
     // b. Hình trụ (Cylinder)
     if (text.includes("HINH TRU")) {
         if (!geometry.cylinders || geometry.cylinders.length === 0) {
-            // Cố gắng tìm 2 tâm đáy O, O'
             const centers = geometry.points.filter((p:any) => p.label && (p.label.includes('O') || p.label.includes('I')));
             if (centers.length >= 2) {
                 if(!geometry.cylinders) geometry.cylinders = [];
-                // Tạo điểm bán kính ảo
                 const rPoint = { id: generateId('p_rad'), x: centers[1].x + 80, y: centers[1].y, label: '', hidden: true };
                 geometry.points.push(rPoint);
                 geometry.cylinders.push({
@@ -161,20 +184,16 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
     const pointCount = geometry.points.length;
     
     if (segmentCount < pointCount && pointCount >= 3) {
-        // Sắp xếp điểm theo góc để nối thành vòng tròn (tránh nối chéo lung tung)
-        // 1. Tìm tâm
         let cx = 0, cy = 0;
         geometry.points.forEach((p:any) => { cx += p.x; cy += p.y; });
         cx /= pointCount; cy /= pointCount;
         
-        // 2. Sort theo góc quanh tâm
         const sortedPoints = [...geometry.points].sort((a:any, b:any) => {
             const angA = Math.atan2(a.y - cy, a.x - cx);
             const angB = Math.atan2(b.y - cy, b.x - cx);
             return angA - angB;
         });
 
-        // 3. Nối vòng
         for (let i = 0; i < pointCount; i++) {
             ensureSegment(sortedPoints[i].id, sortedPoints[(i+1)%pointCount].id);
         }
@@ -223,7 +242,7 @@ function resolveGeometryReferences(geometry: any) {
 function fixAndScaleGeometry(geometry: any) {
     if (!geometry.points || geometry.points.length === 0) return;
     
-    // 1. Kiểm tra tọa độ hỏng (tất cả về 0 hoặc trùng nhau)
+    // 1. Kiểm tra tọa độ hỏng
     let allZero = true;
     let allSame = true;
     const firstP = geometry.points[0];
@@ -231,12 +250,10 @@ function fixAndScaleGeometry(geometry: any) {
     geometry.points.forEach((p: any) => {
         if (p.x !== 0 || p.y !== 0) allZero = false;
         if (Math.abs(p.x - firstP.x) > 1 || Math.abs(p.y - firstP.y) > 1) allSame = false;
-        // Fix undefined/null
         if (p.x === undefined) p.x = 0;
         if (p.y === undefined) p.y = 0;
     });
 
-    // Nếu hỏng -> Explode points thành vòng tròn để user chỉnh
     if (allZero || allSame) {
         const radius = 200;
         const cx = 500;
@@ -247,10 +264,10 @@ function fixAndScaleGeometry(geometry: any) {
             p.x = cx + radius * Math.cos(ang);
             p.y = cy + radius * Math.sin(ang);
         });
-        return; // Đã fix xong, không cần scale nữa
+        return; 
     }
 
-    // 2. Tính Bounding Box hiện tại
+    // 2. Tính Bounding Box
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     geometry.points.forEach((p: any) => {
         if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
@@ -260,10 +277,9 @@ function fixAndScaleGeometry(geometry: any) {
     let width = maxX - minX;
     let height = maxY - minY;
     
-    // Nếu width/height quá nhỏ (< 10 đơn vị) -> Có thể là tọa độ chuẩn hóa (0-1) hoặc lỗi
+    // Auto scale
     if (width < 10 || height < 10) {
-        // Phóng to cực mạnh
-        const scaleFactor = 400 / Math.max(width, height, 0.1); // Tránh chia 0
+        const scaleFactor = 400 / Math.max(width, height, 0.1); 
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
         
@@ -272,12 +288,11 @@ function fixAndScaleGeometry(geometry: any) {
             p.y = (p.y - cy) * scaleFactor + 400;
         });
     } else {
-        // Scale bình thường để fit vào 1000x800
         const targetW = 600;
         const targetH = 500;
         const scaleX = width > 0 ? targetW / width : 1;
         const scaleY = height > 0 ? targetH / height : 1;
-        const scale = Math.min(scaleX, scaleY, 1.5); // Không phóng to quá mức nếu hình đã to
+        const scale = Math.min(scaleX, scaleY, 1.5); 
 
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
@@ -302,10 +317,10 @@ export const parseGeometryProblem = async (
   
   const promptText = `
     Đề bài: "${text}"
-    YÊU CẦU XỬ LÝ:
-    1. Trích xuất các điểm, đoạn thẳng, đường tròn...
-    2. NẾU LÀ ẢNH: Hãy nhìn kỹ các nét vẽ. Nếu thấy một hình khép kín (tam giác, tứ giác...), HÃY TRẢ VỀ CÁC SEGMENT NỐI CHÚNG. Đừng chỉ trả về điểm.
-    3. TỌA ĐỘ: Hãy ước lượng tọa độ sao cho hình cân đối. Đừng để các điểm trùng nhau.
+    YÊU CẦU XỬ LÝ (TUYỆT ĐỐI TUÂN THỦ):
+    1. Output CHỈ LÀ MỘT KHỐI JSON DUY NHẤT. Key phải có ngoặc kép.
+    2. NẾU LÀ ẢNH: Hãy nhìn kỹ các nét vẽ. Nếu thấy hình khép kín, HÃY TRẢ VỀ CÁC SEGMENT NỐI CHÚNG.
+    3. Tọa độ (x,y) nên nằm trong khoảng 0-1000.
   `;
   parts.push({ text: promptText });
 
@@ -329,13 +344,13 @@ export const parseGeometryProblem = async (
                                 (payload.candidates?.[0]?.content?.parts?.[0]?.text || JSON.stringify(payload));
 
                   const result = cleanAndParseJSON(rawText);
-                  if (!result) throw new Error("JSON invalid");
+                  if (!result) throw new Error("JSON invalid (Sau khi đã cố sửa lỗi)");
                   
                   normalizeAndResolve(result, text, resolve);
 
               } catch (error: any) {
                   console.error("AI Error:", error);
-                  reject(new Error("Lỗi xử lý AI: " + error.message));
+                  reject(new Error("Lỗi xử lý AI: Không thể đọc định dạng trả về."));
               }
           }
 
