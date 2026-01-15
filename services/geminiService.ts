@@ -4,33 +4,41 @@ import { generateId } from "../utils/geometry";
 
 // --- CẤU HÌNH AI: GEOMETRY ENGINE ---
 const SYSTEM_INSTRUCTION = `
-Bạn là "Geometry Solver" - Chuyên gia dựng hình học.
-Nhiệm vụ: Phân tích đề bài (Text hoặc Ảnh) và trả về dữ liệu dựng hình JSON.
+Bạn là "Geometry Solver" - Chuyên gia dựng hình học toán học.
+Nhiệm vụ: Phân tích đề bài (Text hoặc Ảnh) và trả về dữ liệu JSON để vẽ hình.
 
---- INPUT LOGIC ---
-1. Ưu tiên nội dung trong "Text Input" nếu nó là đề bài toán.
-2. Nếu "Text Input" rỗng hoặc chỉ là lệnh (vd: "vẽ bài này", "giải giúp"), hãy OCR đọc đề từ Ảnh (nếu có).
+--- QUY TẮC XỬ LÝ (QUAN TRỌNG) ---
+1. **ƯU TIÊN TUYỆT ĐỐI**: Nếu người dùng nhập Text, hãy vẽ theo Text. Nếu Text rỗng, **BẮT BUỘC** phải đọc nội dung từ Ảnh (OCR).
+2. **PHÂN TÍCH HÌNH HỌC**:
+   - Khi thấy "Tam giác ABC", phải tự động tạo 3 đoạn thẳng: AB, BC, CA.
+   - Khi thấy "Tứ giác ABCD", tạo 4 đoạn: AB, BC, CD, DA.
+   - Khi thấy "Đường tròn (O)", tạo đường tròn tâm O.
+3. **HỆ TRỤC**:
+   - Canvas 1000x800. Gốc (0,0) trên-trái.
+   - Tâm hình chính đặt tại (500, 400).
+   - Chọn đơn vị độ dài lớn (ví dụ R=150) để hình rõ đẹp.
 
---- OUTPUT JSON FORMAT ---
+--- OUTPUT JSON FORMAT (BẮT BUỘC) ---
 {
-  "points": [ { "id": "p1", "label": "A", "x": 500, "y": 200 }, ... ],
-  "segments": [ { "from": "A", "to": "B" }, { "from": "B", "to": "C" } ... ],
-  "circles": [ { "center": "O", "radiusPoint": "A" } ],
-  "detected_text": "Nội dung đề bài nhận diện được (nếu dùng ảnh)",
-  "explanation": "Giải thích ngắn gọn."
+  "detected_text": "Trích xuất lại nguyên văn đề bài (đặc biệt quan trọng nếu dùng ảnh)",
+  "points": [ 
+    { "label": "A", "x": 500, "y": 200 }, 
+    { "label": "B", "x": 300, "y": 600 } 
+  ],
+  "segments": [ 
+    { "from": "A", "to": "B" }, 
+    { "from": "B", "to": "C" }, 
+    { "from": "C", "to": "A" } 
+  ],
+  "circles": [ 
+    { "center": "O", "radiusPoint": "A" } 
+  ]
 }
-
---- QUY TẮC DỰNG HÌNH ---
-1. **Tọa độ**: Canvas 1000x800. Gốc (0,0) trên-trái. Tâm hình chính tại **(500, 400)**.
-2. **Segments**: BẮT BUỘC liệt kê các đoạn thẳng cần vẽ. Đừng để người dùng tự nối.
-   - Ví dụ: Tam giác ABC -> segments: AB, BC, CA.
-3. **Circles**: Liệt kê đường tròn nếu có.
-4. Chọn đơn vị độ dài hợp lý (ví dụ R=150) để hình to, rõ, đẹp.
+Hãy chắc chắn rằng mọi điểm quan trọng đều được nối với nhau đúng theo đề bài. Đừng để các điểm rời rạc.
 `;
 
 function cleanAndParseJSON(text: string): any {
     if (!text || typeof text !== 'string') return null;
-    // Tìm JSON block đầu tiên và cuối cùng để tránh rác
     let clean = text.replace(/```json/gi, "").replace(/```/g, "");
     const firstOpen = clean.indexOf('{');
     const lastClose = clean.lastIndexOf('}');
@@ -38,7 +46,6 @@ function cleanAndParseJSON(text: string): any {
         clean = clean.substring(firstOpen, lastClose + 1);
     }
     try {
-        // Sửa lỗi JSON phổ biến do AI sinh ra
         clean = clean.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
         return JSON.parse(clean);
     } catch (e) {
@@ -48,19 +55,22 @@ function cleanAndParseJSON(text: string): any {
 }
 
 // --- BỘ MÁY NỐI ĐIỂM (FALLBACK) ---
-// Chỉ chạy khi AI quên trả về "segments" trong JSON
+// Chạy khi AI quên trả về "segments" hoặc khi cần bổ sung
 function fallbackAutoConnect(geometry: any, problemText: string) {
-    // Logic cũ: quét văn bản để nối điểm (AB, BC...)
-    // Chỉ dùng khi AI không trả về segments rõ ràng
-    if (!geometry.segments) geometry.segments = [];
-    if (!geometry.circles) geometry.circles = [];
-    if (geometry.segments.length > 0) return; // AI đã làm tốt, không cần can thiệp
-
     if (!problemText) return;
 
     const points = geometry.points as any[];
     const labelMap: Record<string, string> = {};
     const existingSegments = new Set<string>(); 
+
+    // Index các segments đã có từ AI để tránh trùng
+    if (!geometry.segments) geometry.segments = [];
+    if (!geometry.circles) geometry.circles = [];
+    
+    geometry.segments.forEach((s: any) => {
+        const k = [s.startPointId, s.endPointId].sort().join('-');
+        existingSegments.add(k);
+    });
 
     points.forEach(p => {
         if (p.label) labelMap[p.label.trim().toUpperCase()] = p.id;
@@ -85,9 +95,11 @@ function fallbackAutoConnect(geometry: any, problemText: string) {
     let safeText = problemText.toUpperCase()
         .replace(/ĐƯỜNG TRÒN/g, "__CIRCLE__")
         .replace(/TAM GIÁC/g, "__TRI__")
-        .replace(/TỨ GIÁC/g, "__QUAD__");
+        .replace(/TỨ GIÁC/g, "__QUAD__")
+        .replace(/HÌNH CHỮ NHẬT/g, "__RECT__")
+        .replace(/HÌNH VUÔNG/g, "__SQUARE__");
 
-    // 1. Quét chuỗi điểm liên tục (ABC -> AB, BC)
+    // 1. Quét chuỗi điểm liên tục dính liền (ABC -> AB, BC)
     const sequenceRegex = /\b[A-Z]{2,}\b/g;
     let match;
     while ((match = sequenceRegex.exec(safeText)) !== null) {
@@ -95,15 +107,30 @@ function fallbackAutoConnect(geometry: any, problemText: string) {
         let validPointsCount = 0;
         for (let char of str) if (labelMap[char]) validPointsCount++;
         
-        if (validPointsCount >= str.length * 0.7) { // Nếu đa số là điểm
+        // Nếu chuỗi chủ yếu là các điểm có thực (tránh từ viết tắt tiếng Anh nhầm lẫn)
+        if (validPointsCount >= str.length * 0.7) { 
             for (let i = 0; i < str.length - 1; i++) {
                 if (labelMap[str[i]] && labelMap[str[i+1]]) addSegment(str[i], str[i+1]);
             }
-            // Nối khép kín nếu là đa giác
-            const prefix = safeText.substring(Math.max(0, match.index - 15), match.index);
-            if (prefix.includes("__TRI__") || prefix.includes("__QUAD__")) {
+            // Nối khép kín nếu có từ khóa hình học phía trước
+            const prefix = safeText.substring(Math.max(0, match.index - 20), match.index);
+            if (prefix.includes("__TRI__") || prefix.includes("__QUAD__") || prefix.includes("__RECT__") || prefix.includes("__SQUARE__")) {
                 if (labelMap[str[0]] && labelMap[str[str.length-1]]) addSegment(str[0], str[str.length-1]);
             }
+        }
+    }
+
+    // 2. Quét chuỗi điểm có khoảng trắng (VD: "Tam giác A B C")
+    // Regex tìm các chữ cái đơn lẻ đứng gần nhau
+    const spacedRegex = /(?:__TRI__|__QUAD__|__RECT__|__SQUARE__|HÌNH)\s+([A-Z](?:\s*[,.-]?\s*[A-Z]){2,})/g;
+    while ((match = spacedRegex.exec(safeText)) !== null) {
+        const pointStr = match[1].replace(/[^A-Z]/g, ''); // Lọc lấy chỉ chữ cái
+        if (pointStr.length >= 3) {
+             for (let i = 0; i < pointStr.length - 1; i++) {
+                addSegment(pointStr[i], pointStr[i+1]);
+            }
+            // Khép kín
+            addSegment(pointStr[0], pointStr[pointStr.length-1]);
         }
     }
 }
@@ -165,17 +192,14 @@ function normalizeAndResolve(result: any, userText: string, resolvePromise: (val
         });
     }
 
-    // 4. Fallback Auto Connect (Nếu AI lười không trả segments)
-    // Dùng detected_text từ AI nếu userText quá ngắn
-    const textToScan = (userText && userText.length > 10) ? userText : (result.detected_text || "");
+    // 4. Fallback Auto Connect
+    // Sử dụng detected_text từ AI nếu userText quá ngắn hoặc rỗng
+    // Logic mới: Luôn chạy fallback quét thêm text để bổ sung những đoạn mà AI có thể sót
+    const textToScan = (userText && userText.trim().length > 5) ? userText : (result.detected_text || "");
     fallbackAutoConnect(g, textToScan);
     
     // 5. Scale & Center
     scaleAndCenterGeometry(g);
-    
-    // Clean up temp fields from AI JSON result so they don't pollute GeometryData
-    delete result.segments; 
-    delete result.circles;
     
     resolvePromise(result);
 }
@@ -189,6 +213,7 @@ function scaleAndCenterGeometry(geometry: any) {
         if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
     });
 
+    // Tránh lỗi chia cho 0 nếu tất cả điểm trùng nhau
     if (maxX - minX < 10) { maxX += 50; minX -= 50; }
     if (maxY - minY < 10) { maxY += 50; minY -= 50; }
 
@@ -227,21 +252,27 @@ export const parseGeometryProblem = async (
     parts.push({ inlineData: { mimeType, data: base64Image } });
   }
   
-  const promptText = `
-    Đề bài (Text Input): "${text}"
-    
-    YÊU CẦU QUAN TRỌNG:
-    1. Nếu "Text Input" có nội dung toán học cụ thể, hãy vẽ theo đó.
-    2. Nếu "Text Input" rỗng hoặc chung chung, HÃY DÙNG ẢNH ĐỂ GIẢI.
-    3. Output JSON MẪU:
-       {
-         "detected_text": "...",
-         "points": [ {"label":"A", "x":..., "y":...}, ... ],
-         "segments": [ {"from":"A", "to":"B"}, {"from":"B", "to":"C"}, {"from":"C", "to":"A"} ... ],
-         "circles": [ {"center":"O", "radiusPoint":"A"} ]
-       }
-    4. CỰC KỲ QUAN TRỌNG: Hãy liệt kê rõ "segments" (các đoạn thẳng) để tôi biết nối điểm nào với điểm nào. Đừng chỉ trả về mỗi points.
-  `;
+  // LOGIC PROMPT MỚI: Phân biệt rõ trường hợp Text vs Ảnh
+  let promptText = "";
+  
+  if (text && text.trim().length > 5) {
+      // Có text -> Ưu tiên vẽ theo text
+      promptText = `
+        Đề bài (Text Input): "${text}"
+        YÊU CẦU: Vẽ hình dựa trên nội dung văn bản trên. Trả về JSON gồm points, segments, circles.
+      `;
+  } else {
+      // Không có text (hoặc quá ngắn) -> Bắt buộc đọc ảnh
+      promptText = `
+        INPUT LÀ HÌNH ẢNH ĐỀ BÀI TOÁN.
+        NHIỆM VỤ:
+        1. Đọc nội dung chữ trong ảnh (OCR) và điền vào trường "detected_text".
+        2. Dựa vào nội dung đó, xác định các điểm và CÁC ĐOẠN THẲNG CẦN NỐI.
+        3. Trả về JSON gồm points, segments (RẤT QUAN TRỌNG), circles.
+        Ví dụ: Nếu ảnh có đề "Tam giác ABC", hãy trả về points A,B,C và segments AB,BC,CA.
+      `;
+  }
+
   parts.push({ text: promptText });
 
   return new Promise((resolve, reject) => {
