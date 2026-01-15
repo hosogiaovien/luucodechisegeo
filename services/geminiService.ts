@@ -2,37 +2,27 @@
 import { AIResponse, GeometryData } from "../types";
 import { generateId } from "../utils/geometry";
 
-// --- CẤU HÌNH AI: CHUYÊN GIA TỌA ĐỘ ---
+// --- CẤU HÌNH AI: CHUYÊN GIA TỌA ĐỘ & OCR ---
 const SYSTEM_INSTRUCTION = `
-Bạn là "Geometry Coordinate Solver" (Máy tính tọa độ hình học).
-Nhiệm vụ DUY NHẤT: Tính toán tọa độ (x, y) của các điểm trong đề bài toán hình học phẳng.
+Bạn là "Geometry Solver". Nhiệm vụ:
+1. Đọc hiểu đề bài toán hình học (từ văn bản hoặc hình ảnh).
+2. Tính toán tọa độ (x, y) của các điểm quan trọng.
+3. Trích xuất lại nội dung đề bài (OCR) để tôi có thể xử lý nối điểm.
 
 --- QUY TẮC CỐT LÕI ---
-1. **Hệ trục**: 
-   - Canvas SVG kích thước lớn. Gốc tọa độ (0,0) ở góc trên-trái.
-   - Chọn tâm hình chính (ví dụ tâm đường tròn ngoại tiếp hoặc trọng tâm) đặt tại **(500, 400)**.
-   - Trục Y hướng xuống (theo chuẩn SVG).
-
-2. **Input**: Đề bài toán (văn bản/ảnh).
-
-3. **Output**: Chỉ trả về JSON danh sách "points". 
-   - "label": Tên điểm (A, B, C, O, M...).
-   - "x", "y": Tọa độ số thực chính xác.
-   - KHÔNG cần trả về danh sách đoạn thẳng (segments) hay đường tròn (circles). Tôi sẽ tự nối chúng dựa trên tên điểm.
-
-4. **Tư duy hình học**:
-   - Dùng các định lý hình học (Pythagoras, Lượng giác, Vector) để tính điểm phụ.
-   - Nếu đề bài không cho độ dài cụ thể, hãy TỰ CHỌN một đơn vị chuẩn (ví dụ R = 150 đơn vị) để hình vẽ đẹp và cân đối.
-
---- JSON MẪU ---
-{
-  "points": [
-    { "id": "p1", "label": "O", "x": 500, "y": 400 },
-    { "id": "p2", "label": "A", "x": 650, "y": 400 },
-    { "id": "p3", "label": "M", "x": 800, "y": 250 }
-  ],
-  "explanation": "Chọn R=150. O(500,400). A thuộc (O) nên..."
-}
+1. **Hệ trục**: Canvas 1000x800. Gốc (0,0) góc trên-trái.
+   - Đặt tâm hình (ví dụ tâm đường tròn ngoại tiếp) tại **(500, 400)**.
+   - Trục Y hướng xuống.
+2. **Output JSON**:
+   {
+     "points": [ { "id": "p1", "label": "A", "x": 500, "y": 200 }, ... ],
+     "detected_text": "Trích xuất lại nguyên văn đề bài từ ảnh (nếu có) hoặc copy lại input.",
+     "explanation": "Giải thích ngắn gọn cách dựng (tùy chọn)."
+   }
+3. **Logic**:
+   - Nếu đề bài là ảnh, BẮT BUỘC phải điền trường "detected_text".
+   - Tự chọn đơn vị độ dài hợp lý (ví dụ R=150) nếu đề không cho số cụ thể.
+   - KHÔNG cần trả về segments/circles (code sẽ tự nối dựa trên "detected_text").
 `;
 
 function cleanAndParseJSON(text: string): any {
@@ -55,6 +45,7 @@ function cleanAndParseJSON(text: string): any {
 // --- BỘ MÁY DỰNG HÌNH TỰ ĐỘNG (AUTO-CONSTRUCTION ENGINE) ---
 function autoConnectDots(geometry: any, problemText: string) {
     if (!geometry.points || geometry.points.length === 0) return;
+    if (!problemText) return; // Không có text thì chịu thua
 
     const points = geometry.points as any[];
     const labelMap: Record<string, string> = {};
@@ -90,32 +81,72 @@ function autoConnectDots(geometry: any, problemText: string) {
         }
     };
 
-    const text = problemText.toUpperCase()
-        .replace(/ĐƯỜNG TRÒN/g, "CIRCLE")
-        .replace(/TAM GIÁC/g, "TRIANGLE")
-        .replace(/TỨ GIÁC/g, "QUAD")
-        .replace(/ĐƯỜNG KÍNH/g, "DIAMETER")
-        .replace(/BÁN KÍNH/g, "RADIUS")
-        .replace(/TIẾP TUYẾN/g, "TANGENT");
-
-    // A. QUÉT CẶP ĐIỂM (AB, BC...)
-    const pairRegex = /([A-Z])([A-Z])/g;
-    let match;
-    while ((match = pairRegex.exec(text)) !== null) {
-        addSegment(match[1], match[2]);
-    }
+    // 1. CHUẨN HÓA VĂN BẢN ĐỂ TRÁNH NHẦM LẪN
+    // Thay thế các từ khóa bằng Token đặc biệt để không bị regex bắt nhầm các chữ cái trong đó (VD: I trong CIRCLE)
+    let safeText = problemText.toUpperCase();
     
-    // B. QUÉT CẶP ĐIỂM CÁCH NHAU
-    const splitRegex = /([A-Z])\s+(?:VÀ|VỚI|AND|WITH|-)\s+([A-Z])/g;
-    while ((match = splitRegex.exec(text)) !== null) {
-        addSegment(match[1], match[2]);
+    const keywords = [
+        { key: "ĐƯỜNG TRÒN", token: "__CIRCLE__" },
+        { key: "TAM GIÁC", token: "__TRI__" },
+        { key: "TỨ GIÁC", token: "__QUAD__" },
+        { key: "HÌNH CHỮ NHẬT", token: "__RECT__" },
+        { key: "HÌNH VUÔNG", token: "__SQUARE__" },
+        { key: "ĐƯỜNG KÍNH", token: "__DIAMETER__" },
+        { key: "BÁN KÍNH", token: "__RADIUS__" },
+        { key: "TIẾP TUYẾN", token: "__TANGENT__" },
+        { key: "CẮT", token: "__INTERSECT__" },
+        { key: "TẠI", token: "__AT__" }
+    ];
+
+    keywords.forEach(kw => {
+        safeText = safeText.replace(new RegExp(kw.key, 'g'), kw.token);
+    });
+
+    // 2. QUÉT CÁC CHUỖI ĐIỂM LIÊN TỤC (VD: "ABC", "MNPQ")
+    // Regex tìm các chuỗi chữ cái in hoa liên tiếp (độ dài >= 2)
+    // Lưu ý: Chỉ match nếu các chữ cái đó LÀ ĐIỂM ĐÃ BIẾT
+    const sequenceRegex = /\b[A-Z]{2,}\b/g;
+    let match;
+    
+    while ((match = sequenceRegex.exec(safeText)) !== null) {
+        const str = match[0];
+        // Kiểm tra xem chuỗi này có phải là tập hợp các điểm không hay là từ tiếng Anh/Việt chưa được replace
+        let validPointsCount = 0;
+        for (let i = 0; i < str.length; i++) {
+            if (labelMap[str[i]]) validPointsCount++;
+        }
+
+        // Nếu đa số ký tự là điểm (trên 50%), ta coi đây là chuỗi điểm
+        if (validPointsCount >= str.length / 2) {
+            // Nối liền kề: A-B, B-C, C-D...
+            for (let i = 0; i < str.length - 1; i++) {
+                if (labelMap[str[i]] && labelMap[str[i+1]]) {
+                    addSegment(str[i], str[i+1]);
+                }
+            }
+            // Nếu có từ khóa tam giác/tứ giác phía trước, nối khép kín (Last -> First)
+            const prefix = safeText.substring(Math.max(0, match.index - 15), match.index);
+            if (prefix.includes("__TRI__") || prefix.includes("__QUAD__") || prefix.includes("__RECT__") || prefix.includes("__SQUARE__")) {
+                if (labelMap[str[0]] && labelMap[str[str.length-1]]) {
+                    addSegment(str[0], str[str.length-1]);
+                }
+            }
+        }
     }
 
-    // C. XỬ LÝ ĐƯỜNG TRÒN
-    const circleRegex = /(?:CIRCLE|TÂM|\()\s*([A-Z])/g;
+    // 3. QUÉT CẶP ĐIỂM CÁCH NHAU (A và B, A với B, đoạn AB)
+    const splitRegex = /([A-Z])\s+(?:VÀ|VỚI|AND|WITH|-|\.|,)\s+([A-Z])/g;
+    while ((match = splitRegex.exec(safeText)) !== null) {
+        if (labelMap[match[1]] && labelMap[match[2]]) {
+            addSegment(match[1], match[2]);
+        }
+    }
+
+    // 4. XỬ LÝ ĐƯỜNG TRÒN
+    const circleRegex = /(?:__CIRCLE__|TÂM|\()\s*([A-Z])/g;
     const processedCenters = new Set<string>();
 
-    while ((match = circleRegex.exec(text)) !== null) {
+    while ((match = circleRegex.exec(safeText)) !== null) {
         const centerLabel = match[1];
         const centerId = labelMap[centerLabel];
 
@@ -123,23 +154,31 @@ function autoConnectDots(geometry: any, problemText: string) {
             processedCenters.add(centerId);
             
             let radiusPointId = undefined;
-            let radiusValue = 120; 
+            let radiusValue = 150; 
 
+            // Logic tìm bán kính: Tìm điểm xa nhất trong danh sách có vẻ thuộc đường tròn
             const centerPt = points.find(p => p.id === centerId);
             if (centerPt) {
                 let candidates: {id: string, dist: number}[] = [];
                 points.forEach(p => {
                     if (p.id !== centerId) {
                         const d = Math.hypot(p.x - centerPt.x, p.y - centerPt.y);
-                        if (d > 20 && d < 800) candidates.push({id: p.id, dist: d});
+                        // Lọc nhiễu: Bán kính không quá nhỏ hoặc quá lớn
+                        if (d > 40 && d < 900) candidates.push({id: p.id, dist: d});
                     }
                 });
                 
+                // Gom nhóm các điểm có khoảng cách xấp xỉ nhau
                 if (candidates.length > 0) {
                     candidates.sort((a, b) => b.dist - a.dist);
+                    // Lấy nhóm xa nhất làm bán kính
                     const maxDist = candidates[0].dist;
-                    radiusPointId = candidates[0].id;
-                    radiusValue = maxDist;
+                    const onCircle = candidates.filter(c => Math.abs(c.dist - maxDist) < 20);
+                    
+                    if (onCircle.length > 0) {
+                        radiusPointId = onCircle[0].id;
+                        radiusValue = maxDist;
+                    }
                 }
             }
 
@@ -151,15 +190,6 @@ function autoConnectDots(geometry: any, problemText: string) {
                 color: 'black',
                 style: 'solid'
             });
-        }
-    }
-
-    // D. ĐA GIÁC
-    const polyRegex = /(?:TRIANGLE|QUAD|HÌNH)\s+([A-Z]{3,})/g;
-    while ((match = polyRegex.exec(text)) !== null) {
-        const str = match[1]; 
-        for (let i = 0; i < str.length; i++) {
-            addSegment(str[i], str[(i + 1) % str.length]);
         }
     }
 }
@@ -185,7 +215,15 @@ function normalizeAndResolve(result: any, originalText: string, resolvePromise: 
         }
     });
 
-    autoConnectDots(g, originalText);
+    // --- QUAN TRỌNG: SỬ DỤNG TEXT TỪ AI NẾU INPUT RỖNG ---
+    // Nếu người dùng upload ảnh, originalText sẽ rỗng.
+    // Ta dùng detected_text do AI đọc được để nối điểm.
+    const textToScan = (result.detected_text && result.detected_text.length > originalText.length) 
+        ? result.detected_text 
+        : originalText;
+
+    autoConnectDots(g, textToScan || ""); // Fallback empty string
+    
     scaleAndCenterGeometry(g);
     resolvePromise(result);
 }
@@ -240,10 +278,9 @@ export const parseGeometryProblem = async (
   const promptText = `
     Đề bài: "${text}"
     YÊU CẦU:
-    1. Trả về JSON danh sách "points".
-    2. Mỗi point PHẢI có "label" (tên điểm) và tọa độ "x", "y".
-    3. Tính toán tọa độ chính xác. Đặt tâm hình chính tại (500, 400).
-    4. KHÔNG cần trả về segments/circles.
+    1. Trả về JSON danh sách "points" có tọa độ chính xác.
+    2. Nếu có ảnh, HÃY TRÍCH XUẤT LẠI ĐỀ BÀI vào trường "detected_text". Điều này rất quan trọng để tôi vẽ các đoạn thẳng.
+    3. Hệ trục SVG (500,400) làm tâm.
   `;
   parts.push({ text: promptText });
 
