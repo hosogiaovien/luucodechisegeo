@@ -190,7 +190,9 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
       // Tự động căn giữa hình vẽ vào gốc tọa độ (0,0) của canvas
       // Do canvas có pan mặc định là chính giữa màn hình, nên (0,0) chính là tâm nhìn.
       const geom = response.geometry;
-      if (geom.points.length > 0) {
+      
+      // Safety Check: Đảm bảo geom và points tồn tại trước khi truy cập
+      if (geom && geom.points && geom.points.length > 0) {
           let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
           geom.points.forEach(p => {
               if (p.x < minX) minX = p.x;
@@ -215,8 +217,12 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
       }
       // -----------------------
 
-      setGeometryData(geom);
-      setExplanation(response.explanation);
+      // Chỉ cập nhật nếu geometry hợp lệ
+      if (geom) {
+          setGeometryData(geom);
+      }
+      
+      setExplanation(response.explanation || "Đã hoàn tất dựng hình.");
     } catch (err: any) {
       setError(err.message || "Lỗi xử lý logic.");
     } finally {
