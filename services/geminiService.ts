@@ -13,10 +13,9 @@ Nhiệm vụ: Phân tích đề bài (Text hoặc Ảnh) và trả về dữ li�
    - Khi thấy "Tam giác ABC", phải tự động tạo 3 đoạn thẳng: AB, BC, CA.
    - Khi thấy "Tứ giác ABCD", tạo 4 đoạn: AB, BC, CD, DA.
    - Khi thấy "Đường tròn (O)", tạo đường tròn tâm O.
-3. **HỆ TRỤC**:
-   - Canvas 1000x800. Gốc (0,0) trên-trái.
-   - Tâm hình chính đặt tại (500, 400).
-   - Chọn đơn vị độ dài lớn (ví dụ R=150) để hình rõ đẹp.
+3. **HỆ TRỤC & TỌA ĐỘ**:
+   - Chỉ trả về các điểm thuộc hình vẽ. **KHÔNG** trả về các điểm khung viền (0,0), (1000,1000) nếu chúng không phải là đỉnh của hình.
+   - Tập trung hình vào giữa hệ tọa độ ảo.
 
 --- OUTPUT JSON FORMAT (BẮT BUỘC) ---
 {
@@ -193,12 +192,10 @@ function normalizeAndResolve(result: any, userText: string, resolvePromise: (val
     }
 
     // 4. Fallback Auto Connect
-    // Sử dụng detected_text từ AI nếu userText quá ngắn hoặc rỗng
-    // Logic mới: Luôn chạy fallback quét thêm text để bổ sung những đoạn mà AI có thể sót
     const textToScan = (userText && userText.trim().length > 5) ? userText : (result.detected_text || "");
     fallbackAutoConnect(g, textToScan);
     
-    // 5. Scale & Center
+    // 5. Scale & Center (Smart Outlier Detection)
     scaleAndCenterGeometry(g);
     
     resolvePromise(result);
@@ -207,28 +204,61 @@ function normalizeAndResolve(result: any, userText: string, resolvePromise: (val
 function scaleAndCenterGeometry(geometry: any) {
     if (!geometry.points || geometry.points.length === 0) return;
     
+    // --- SMART OUTLIER DETECTION ---
+    // Loại bỏ các điểm "rác" (ví dụ điểm gốc 0,0 hoặc các điểm quá xa trung tâm) để tránh làm hình bị thu nhỏ (scale bé)
+    let sumX = 0, sumY = 0;
+    geometry.points.forEach((p: any) => { sumX += p.x; sumY += p.y; });
+    const avgX = sumX / geometry.points.length;
+    const avgY = sumY / geometry.points.length;
+
+    // Tính khoảng cách từ mỗi điểm đến trung tâm
+    const dists = geometry.points.map((p: any) => ({
+        p,
+        d: Math.hypot(p.x - avgX, p.y - avgY)
+    }));
+    
+    // Sắp xếp để tìm trung vị (median)
+    dists.sort((a: any, b: any) => a.d - b.d);
+    const medianDist = dists[Math.floor(dists.length / 2)].d;
+    
+    // Lọc: Chỉ giữ lại các điểm nằm trong vùng 3 lần bán kính trung vị (hoặc ít nhất 100px)
+    // Điều này loại bỏ các điểm (0,0) nếu hình vẽ thực sự nằm ở (500,500)
+    let validPoints = geometry.points;
+    if (geometry.points.length > 3 && medianDist > 1) {
+         const threshold = Math.max(medianDist * 3.5, 150); // Ngưỡng rộng rãi
+         validPoints = dists.filter((item: any) => item.d <= threshold).map((item: any) => item.p);
+    }
+    // Fallback nếu lọc quá tay
+    if (validPoints.length < 2) validPoints = geometry.points;
+
+    // --- CALCULATE BOUNDS ---
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    geometry.points.forEach((p: any) => {
+    validPoints.forEach((p: any) => {
         if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
     });
 
-    // Tránh lỗi chia cho 0 nếu tất cả điểm trùng nhau
     if (maxX - minX < 10) { maxX += 50; minX -= 50; }
     if (maxY - minY < 10) { maxY += 50; minY -= 50; }
 
     const width = maxX - minX;
     const height = maxY - minY;
     
-    const targetW = 600; 
-    const targetH = 500;
-    const scale = Math.min(targetW / width, targetH / height); 
+    // Target Size (Tăng kích thước vùng hiển thị lên 800x600 để hình to hơn)
+    const targetW = 800; 
+    const targetH = 600;
+    
+    // Tính Scale
+    let scale = Math.min(targetW / width, targetH / height); 
+    // Giới hạn scale tối đa để tránh nổ hình nếu điểm quá gần nhau (ví dụ tọa độ 0-1)
+    if (scale > 200) scale = 200;
 
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
     const targetX = 500;
     const targetY = 400;
 
+    // Apply Transform to ALL points (cả outlier cũng di chuyển theo để giữ quan hệ tương đối)
     geometry.points.forEach((p: any) => {
         p.x = (p.x - centerX) * scale + targetX;
         p.y = (p.y - centerY) * scale + targetY;
@@ -252,24 +282,21 @@ export const parseGeometryProblem = async (
     parts.push({ inlineData: { mimeType, data: base64Image } });
   }
   
-  // LOGIC PROMPT MỚI: Phân biệt rõ trường hợp Text vs Ảnh
   let promptText = "";
-  
   if (text && text.trim().length > 5) {
-      // Có text -> Ưu tiên vẽ theo text
       promptText = `
         Đề bài (Text Input): "${text}"
         YÊU CẦU: Vẽ hình dựa trên nội dung văn bản trên. Trả về JSON gồm points, segments, circles.
       `;
   } else {
-      // Không có text (hoặc quá ngắn) -> Bắt buộc đọc ảnh
       promptText = `
         INPUT LÀ HÌNH ẢNH ĐỀ BÀI TOÁN.
         NHIỆM VỤ:
         1. Đọc nội dung chữ trong ảnh (OCR) và điền vào trường "detected_text".
-        2. Dựa vào nội dung đó, xác định các điểm và CÁC ĐOẠN THẲNG CẦN NỐI.
+        2. Dựa vào nội dung đó, xác định các điểm và CÁC ĐOẠN THẲNG CẦN NỐI (segments).
         3. Trả về JSON gồm points, segments (RẤT QUAN TRỌNG), circles.
         Ví dụ: Nếu ảnh có đề "Tam giác ABC", hãy trả về points A,B,C và segments AB,BC,CA.
+        Đừng trả về điểm (0,0) vô nghĩa. Hãy trả về tọa độ hợp lý cho một hình vẽ đẹp.
       `;
   }
 
