@@ -1,52 +1,33 @@
 
-import { AIResponse } from "../types";
+import { AIResponse, GeometryData, Point } from "../types";
+import { generateId } from "../utils/geometry";
 
 const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Expert" - Trợ lý AI chuyên về hình học phẳng.
 Nhiệm vụ: Chuyển đổi đề bài toán (văn bản hoặc hình ảnh) thành cấu trúc dữ liệu JSON để vẽ hình.
 
 --- QUY TẮC CỐT LÕI (BẮT BUỘC TUÂN THỦ) ---
-1. **KHÔNG BAO GIỜ CHỈ TRẢ VỀ ĐIỂM (POINTS)**.
-   - Một hình vẽ hình học VÔ NGHĨA nếu thiếu các đường nối (Segments).
-   - Nếu bạn tạo điểm A và B, hãy tự hỏi: "A và B có nối với nhau không?". Nếu có (là cạnh tam giác, đường chéo...), PHẢI tạo Segment nối chúng.
+1. **KHÔNG ĐƯỢC QUÊN ĐƯỜNG NỐI (SEGMENTS)**:
+   - Có điểm là PHẢI có đường.
+   - Ví dụ: Tam giác ABC -> Bắt buộc mảng "segments" phải chứa: AB, BC, CA.
+   
+2. **CẤU TRÚC JSON**:
+   {
+     "geometry": {
+       "points": [{ "id": "A", "x": 300, "y": 200, "label": "A" }, ...],
+       "segments": [{ "startPointId": "A", "endPointId": "B", "style": "solid" }, ...],
+       "circles": [],
+       "angles": [{ "centerId": "A", "point1Id": "B", "point2Id": "C", "isRightAngle": true }]
+     },
+     "explanation": "..."
+   }
 
-2. **CẤU TRÚC DỮ LIỆU CHUẨN**:
-   - **points**: [{ id: "A", x: 100, y: 100, label: "A" }, ...]
-   - **segments**: [{ startPointId: "A", endPointId: "B", style: "solid" }, ...] 
-     -> LƯU Ý: \`startPointId\` và \`endPointId\` phải trùng khớp với \`id\` hoặc \`label\` của các điểm trong mảng \`points\`.
-   - **angles**: [{ point1Id: "B", centerId: "A", point2Id: "C", isRightAngle: true }] (Dùng cho góc vuông hoặc góc thường).
-   - **circles**: [{ centerId: "O", radiusPointId: "A" }] (Đường tròn tâm O bán kính OA).
+3. **KÝ HIỆU**:
+   - "Vuông tại A" -> Thêm vào "angles" với isRightAngle: true.
+   - "Đường cao" -> Segment nét liền + Góc vuông.
+   - "Đường trung tuyến/Phân giác" -> Vẽ segment.
 
-3. **PHÂN TÍCH TỪ KHÓA**:
-   - "Vuông góc tại A" -> Tạo đối tượng **angles** với \`isRightAngle: true\` tại đỉnh A.
-   - "Trung điểm M của BC" -> Tạo điểm M nằm giữa B và C, và nhớ tạo segment BM, MC (hoặc BC).
-   - "Đường cao AH" -> Tạo điểm H trên cạnh đối diện, tạo segment AH, và tạo ký hiệu góc vuông tại H.
-
-4. **HỆ TỌA ĐỘ**:
-   - Canvas kích thước 1000x800. Gốc (0,0) ở góc trên trái.
-   - Hãy tính toán tọa độ sao cho hình vẽ nằm thoáng, rộng, căn giữa (x khoảng 300-700, y khoảng 200-600).
-
---- VÍ DỤ JSON MẪU (HỌC THEO CẤU TRÚC NÀY) ---
-Input: "Cho tam giác ABC vuông tại A."
-Output:
-{
-  "geometry": {
-    "points": [
-      { "id": "A", "x": 200, "y": 500, "label": "A" },
-      { "id": "B", "x": 200, "y": 200, "label": "B" },
-      { "id": "C", "x": 600, "y": 500, "label": "C" }
-    ],
-    "segments": [
-      { "id": "AB", "startPointId": "A", "endPointId": "B" },
-      { "id": "AC", "startPointId": "A", "endPointId": "C" },
-      { "id": "BC", "startPointId": "B", "endPointId": "C" }
-    ],
-    "angles": [
-      { "id": "angA", "point1Id": "B", "centerId": "A", "point2Id": "C", "isRightAngle": true }
-    ]
-  },
-  "explanation": "Vẽ tam giác vuông ABC với góc A = 90 độ."
-}
+4. **TỌA ĐỘ**: Canvas 1000x800. Hãy dàn trải hình vẽ ra giữa.
 `;
 
 // --- ROBUST JSON PARSER ---
@@ -74,10 +55,13 @@ function cleanAndParseJSON(text: string): any {
     try {
         return JSON.parse(clean);
     } catch (e) {
-        // Try fixing trailing commas
+        // Aggressive fix for common LLM JSON errors
         try {
+            // Fix trailing commas
             clean = clean.replace(/,\s*}/g, "}");
             clean = clean.replace(/,\s*]/g, "]");
+            // Fix missing quotes on keys
+            clean = clean.replace(/([{,]\s*)([a-zA-Z0-9_]+?)\s*:/g, '$1"$2":');
             return JSON.parse(clean);
         } catch (e2) {
             console.error("JSON Parse Error:", e2);
@@ -86,62 +70,173 @@ function cleanAndParseJSON(text: string): any {
     }
 }
 
+// --- HEURISTIC ENGINE: THE "BACKUP BRAIN" ---
+// Tự động nối điểm và thêm ký hiệu dựa trên phân tích văn bản đề bài
+// Chạy sau khi AI trả về kết quả để trám các lỗ hổng.
+function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
+    if (!problemText || !geometry.points) return;
+
+    const text = problemText.toUpperCase(); // Normalize text for searching
+    const points = geometry.points as any[];
+    
+    // 1. Map Labels to IDs for fast lookup
+    const labelMap: Record<string, string> = {};
+    points.forEach(p => {
+        if (p.label) labelMap[p.label.toUpperCase()] = p.id;
+    });
+
+    const ensureSegment = (label1: string, label2: string) => {
+        const id1 = labelMap[label1];
+        const id2 = labelMap[label2];
+        if (!id1 || !id2) return;
+
+        // Check if segment already exists
+        const exists = geometry.segments?.some((s: any) => 
+            (s.startPointId === id1 && s.endPointId === id2) || 
+            (s.startPointId === id2 && s.endPointId === id1)
+        );
+
+        if (!exists) {
+            if (!geometry.segments) geometry.segments = [];
+            geometry.segments.push({
+                id: generateId('s_auto'),
+                startPointId: id1,
+                endPointId: id2,
+                style: 'solid',
+                color: 'black',
+                strokeWidth: 1.5
+            });
+        }
+    };
+
+    const ensureRightAngle = (centerLabel: string) => {
+        const centerId = labelMap[centerLabel];
+        if (!centerId) return;
+
+        // Check if angle already exists
+        const exists = geometry.angles?.some((a: any) => a.centerId === centerId && a.isRightAngle);
+        
+        if (!exists) {
+            // Need to find 2 neighbors to define the angle
+            const neighbors: string[] = [];
+            if (geometry.segments) {
+                geometry.segments.forEach((s: any) => {
+                    if (s.startPointId === centerId) neighbors.push(s.endPointId);
+                    if (s.endPointId === centerId) neighbors.push(s.startPointId);
+                });
+            }
+
+            if (neighbors.length >= 2) {
+                if (!geometry.angles) geometry.angles = [];
+                geometry.angles.push({
+                    id: generateId('ang_auto'),
+                    centerId: centerId,
+                    point1Id: neighbors[0],
+                    point2Id: neighbors[1],
+                    isRightAngle: true,
+                    color: 'black'
+                });
+            }
+        }
+    };
+
+    // --- AUTO-CONNECT PATTERNS ---
+
+    // 1. TAM GIÁC (Triangle) ABC
+    // Regex matches: "TAM GIÁC ABC", "TAM GIAC MNP"
+    const triRegex = /TAM GI[AÁ]C\s+([A-Z]{3})/g;
+    let match;
+    while ((match = triRegex.exec(text)) !== null) {
+        const [_, labels] = match; // e.g., "ABC"
+        ensureSegment(labels[0], labels[1]);
+        ensureSegment(labels[1], labels[2]);
+        ensureSegment(labels[2], labels[0]);
+    }
+
+    // 2. TỨ GIÁC / HÌNH CHỮ NHẬT / HÌNH VUÔNG (Quad) ABCD
+    const quadRegex = /(?:TỨ GI[AÁ]C|HÌNH (?:CHỮ NHẬT|VUÔNG|THOI|BÌNH HÀNH|THANG))\s+([A-Z]{4})/g;
+    while ((match = quadRegex.exec(text)) !== null) {
+        const [_, labels] = match; // e.g., "ABCD"
+        ensureSegment(labels[0], labels[1]);
+        ensureSegment(labels[1], labels[2]);
+        ensureSegment(labels[2], labels[3]);
+        ensureSegment(labels[3], labels[0]);
+    }
+
+    // 3. ĐOẠN THẲNG / CẠNH (Segment) AB
+    const segRegex = /(?:ĐOẠN THẲNG|CẠNH|ĐƯỜNG CAO|TRUNG TUYẾN)\s+([A-Z]{2})/g;
+    while ((match = segRegex.exec(text)) !== null) {
+        const [_, labels] = match; // e.g., "AB"
+        ensureSegment(labels[0], labels[1]);
+    }
+
+    // 4. GÓC VUÔNG (Right Angle)
+    // "Vuông tại A", "Góc A = 90 độ"
+    const rightAngleRegex1 = /VUÔNG TẠI\s+([A-Z])/g;
+    while ((match = rightAngleRegex1.exec(text)) !== null) {
+        ensureRightAngle(match[1]);
+    }
+    
+    // Explicit 90 degree check
+    // "Góc BAC = 90", "A = 90"
+    const rightAngleRegex2 = /(?:GÓC\s+)?([A-Z]{1,3})\s*=\s*90/g;
+    while ((match = rightAngleRegex2.exec(text)) !== null) {
+        const lbl = match[1];
+        if (lbl.length === 1) ensureRightAngle(lbl);
+        else if (lbl.length === 3) ensureRightAngle(lbl[1]); // Middle char is vertex
+    }
+}
+
 // --- SMART ID RESOLVER (FIX MISSING LINKS) ---
-// AI thường trả về ID đoạn thẳng là "A", "B" (theo label) thay vì ID thực (ví dụ "p1", "p2").
-// Hàm này sẽ map lại cho đúng.
 function resolveGeometryReferences(geometry: any) {
     if (!geometry.points) return;
 
     const labelToId: Record<string, string> = {};
     const idMap: Record<string, string> = {};
 
-    // 1. Build Lookup Maps
     geometry.points.forEach((p: any) => {
-        // Map original ID to itself
         idMap[p.id] = p.id;
-        // Map Label to ID (e.g. "A" -> "p_123")
         if (p.label) {
             labelToId[p.label] = p.id;
-            labelToId[p.label.toLowerCase()] = p.id; // Support lowercase
+            labelToId[p.label.toLowerCase()] = p.id;
         }
     });
 
     const resolve = (ref: string) => {
         if (!ref) return ref;
-        // Case 1: Ref is already a valid ID
         if (idMap[ref]) return ref;
-        // Case 2: Ref is a Label (e.g. "A")
         if (labelToId[ref]) return labelToId[ref];
         if (labelToId[ref.toLowerCase()]) return labelToId[ref.toLowerCase()];
-        return ref; // Fallback
+        return ref;
     };
 
-    // 2. Fix Segments
     if (geometry.segments) {
         geometry.segments.forEach((s: any) => {
             s.startPointId = resolve(s.startPointId);
             s.endPointId = resolve(s.endPointId);
         });
-        // Filter out broken segments where IDs couldn't be resolved
-        geometry.segments = geometry.segments.filter((s: any) => 
-            idMap[s.startPointId] && idMap[s.endPointId]
-        );
+        geometry.segments = geometry.segments.filter((s: any) => idMap[s.startPointId] && idMap[s.endPointId]);
     }
 
-    // 3. Fix Circles
-    if (geometry.circles) {
-        geometry.circles.forEach((c: any) => {
-            c.centerId = resolve(c.centerId);
-            if (c.radiusPointId) c.radiusPointId = resolve(c.radiusPointId);
-        });
-    }
-
-    // 4. Fix Angles
     if (geometry.angles) {
         geometry.angles.forEach((a: any) => {
             a.centerId = resolve(a.centerId);
             a.point1Id = resolve(a.point1Id);
             a.point2Id = resolve(a.point2Id);
+        });
+        // Auto-fix neighbors for right angles if missing
+        geometry.angles.forEach((a: any) => {
+            if (a.isRightAngle && (!a.point1Id || !a.point2Id) && a.centerId) {
+                 const neighbors: string[] = [];
+                 geometry.segments?.forEach((s: any) => {
+                    if (s.startPointId === a.centerId) neighbors.push(s.endPointId);
+                    if (s.endPointId === a.centerId) neighbors.push(s.startPointId);
+                 });
+                 if (neighbors.length >= 2) {
+                     a.point1Id = neighbors[0];
+                     a.point2Id = neighbors[1];
+                 }
+            }
         });
     }
 }
@@ -155,7 +250,6 @@ function scaleAndCenterGeometry(geometry: any) {
     geometry.points.forEach((p: any) => {
         if (typeof p.x !== 'number') p.x = parseFloat(p.x);
         if (typeof p.y !== 'number') p.y = parseFloat(p.y);
-        
         if (p.x < minX) minX = p.x;
         if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y;
@@ -170,13 +264,12 @@ function scaleAndCenterGeometry(geometry: any) {
     if (width === 0) width = 1;
     if (height === 0) height = 1;
 
+    // Target roughly 500x400
     const targetSize = 450;
     const currentMaxSize = Math.max(width, height);
     
     let scale = 1;
-    if (currentMaxSize < 300) {
-        scale = targetSize / currentMaxSize;
-    } else if (currentMaxSize > 1500) {
+    if (currentMaxSize < 200 || currentMaxSize > 1000) {
         scale = targetSize / currentMaxSize;
     }
 
@@ -200,7 +293,6 @@ function scaleAndCenterGeometry(geometry: any) {
     geometry.points.forEach((p: any) => { p.x += dx; p.y += dy; });
     if (geometry.texts) geometry.texts.forEach((t: any) => { if (t.x !== undefined) t.x = t.x * scale + dx; if (t.y !== undefined) t.y = t.y * scale + dy; });
     if (geometry.ellipses) geometry.ellipses.forEach((e: any) => { if (e.cx !== undefined) e.cx += dx; if (e.cy !== undefined) e.cy += dy; });
-    if (geometry.images) geometry.images.forEach((i: any) => { i.x = i.x * scale + dx; i.y = i.y * scale + dy; });
 }
 
 export const parseGeometryProblem = async (
@@ -210,24 +302,19 @@ export const parseGeometryProblem = async (
 ): Promise<AIResponse> => {
   
   const parts: any[] = [];
-  
   if (base64Image) {
-    parts.push({
-      inlineData: { mimeType, data: base64Image },
-    });
+    parts.push({ inlineData: { mimeType, data: base64Image } });
   }
   
   const promptText = `
     [YÊU CẦU DỰNG HÌNH]
     Đề bài: "${text}"
     
-    Hãy phân tích và trả về JSON vẽ hình.
+    Hãy trả về JSON chứa tọa độ các điểm (points) và danh sách đường nối (segments).
     QUAN TRỌNG:
-    1. Đừng quên nối các điểm (segments). Ví dụ: Tam giác ABC phải có segments AB, BC, CA.
-    2. Nếu có góc vuông, hãy thêm vào mảng "angles" với isRightAngle: true.
-    3. Nếu là input hình ảnh, hãy cố gắng nhận diện và vẽ lại đầy đủ các đường nét.
+    1. Trả về đúng định dạng JSON.
+    2. Đừng để các điểm nằm rời rạc, hãy nối chúng theo đề bài (ví dụ Tam giác ABC thì nối AB, BC, CA).
   `;
-  
   parts.push({ text: promptText });
 
   return new Promise((resolve, reject) => {
@@ -248,27 +335,24 @@ export const parseGeometryProblem = async (
                   const payload = event.data.payload;
                   let rawText = '';
 
-                  if (typeof payload === 'string') {
-                      rawText = payload;
-                  } else if (payload && typeof payload === 'object') {
+                  if (typeof payload === 'string') rawText = payload;
+                  else if (payload && typeof payload === 'object') {
                       if (payload.candidates && payload.candidates[0]?.content?.parts?.[0]?.text) {
                           rawText = payload.candidates[0].content.parts[0].text;
-                      } else if (payload.geometry) {
-                          normalizeAndResolve(payload, resolve);
-                          return;
                       } else {
                           rawText = JSON.stringify(payload);
                       }
                   }
 
                   const result = cleanAndParseJSON(rawText);
-                  if (!result) throw new Error("Không thể đọc dữ liệu JSON.");
+                  if (!result) throw new Error("Không đọc được JSON.");
                   
-                  normalizeAndResolve(result, resolve);
+                  // Pass the original text to the normalizer for heuristic fixing
+                  normalizeAndResolve(result, text, resolve);
 
               } catch (error: any) {
-                  console.error("Lỗi xử lý AI:", error);
-                  reject(new Error("Dữ liệu trả về không hợp lệ."));
+                  console.error("AI Error:", error);
+                  reject(new Error("Lỗi xử lý dữ liệu."));
               }
           }
 
@@ -299,7 +383,7 @@ export const parseGeometryProblem = async (
   });
 };
 
-function normalizeAndResolve(result: any, resolve: (value: AIResponse | PromiseLike<AIResponse>) => void) {
+function normalizeAndResolve(result: any, originalText: string, resolve: (value: AIResponse | PromiseLike<AIResponse>) => void) {
     if (!result.geometry && result.points) {
         result = { geometry: result, explanation: "Đã tạo hình vẽ." };
     }
@@ -314,13 +398,11 @@ function normalizeAndResolve(result: any, resolve: (value: AIResponse | PromiseL
     
     ensureArray('points');
     ensureArray('segments');
-    ensureArray('lines');
     ensureArray('circles');
-    ensureArray('ellipses');
     ensureArray('angles');
     ensureArray('texts');
     
-    // 1. Auto-fix IDs if missing
+    // 1. Auto-fix IDs
     ['points', 'segments', 'circles', 'texts', 'angles'].forEach(key => {
         if(g[key]) {
             g[key].forEach((item: any, idx: number) => {
@@ -329,10 +411,14 @@ function normalizeAndResolve(result: any, resolve: (value: AIResponse | PromiseL
         }
     });
 
-    // 2. RESOLVE REFERENCES (Map Label "A" -> ID "p_1")
+    // 2. HEURISTIC ENHANCEMENT (THE FIX!)
+    // Tự động nối điểm dựa trên đề bài nếu AI quên
+    enhanceGeometryWithTextAnalysis(g, originalText);
+
+    // 3. Resolve References (Label -> ID)
     resolveGeometryReferences(g);
 
-    // 3. SCALE & CENTER
+    // 4. Scale & Center
     scaleAndCenterGeometry(g);
     
     resolve(result);
