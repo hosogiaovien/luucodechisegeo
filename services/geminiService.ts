@@ -1,9 +1,8 @@
 
-import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { AIResponse, GeometryData } from "../types";
-import { generateId } from "../utils/geometry";
+import { GoogleGenAI, Type } from "@google/genai";
+import { AIResponse } from "../types";
 
-// Khởi tạo Gemini với API Key từ biến môi trường
+// Sử dụng Gemini 3 Pro - Cấu hình tối ưu cho toán học đa dạng
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const SYSTEM_INSTRUCTION = `
@@ -42,97 +41,6 @@ Trả về JSON tuân thủ schema. Đặc biệt chú ý:
 - "explanation": Giải thích ngắn gọn cách dựng (VD: "Dựng hình chóp S.ABCD với đáy là hình bình hành...").
 `;
 
-// Schema Definition matches the provided "good" file
-const geometrySchema: Schema = {
-  type: Type.OBJECT,
-  properties: {
-    geometry: {
-      type: Type.OBJECT,
-      properties: {
-        points: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
-              x: { type: Type.NUMBER },
-              y: { type: Type.NUMBER },
-              label: { type: Type.STRING },
-              color: { type: Type.STRING }
-            },
-            required: ["id", "x", "y", "label"]
-          }
-        },
-        segments: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
-              startPointId: { type: Type.STRING },
-              endPointId: { type: Type.STRING },
-              style: { type: Type.STRING },
-              color: { type: Type.STRING }
-            },
-            required: ["id", "startPointId", "endPointId", "style"]
-          }
-        },
-        lines: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } },
-        circles: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
-              centerId: { type: Type.STRING },
-              radiusValue: { type: Type.NUMBER },
-              color: { type: Type.STRING },
-              style: { type: Type.STRING }
-            },
-            required: ["id", "centerId", "radiusValue"]
-          }
-        },
-        ellipses: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
-              cx: { type: Type.NUMBER },
-              cy: { type: Type.NUMBER },
-              rx: { type: Type.NUMBER },
-              ry: { type: Type.NUMBER },
-              rotation: { type: Type.NUMBER },
-              color: { type: Type.STRING },
-              style: { type: Type.STRING }
-            },
-            required: ["id", "cx", "cy", "rx", "ry"]
-          }
-        },
-        angles: { 
-          type: Type.ARRAY, 
-          items: { 
-            type: Type.OBJECT, 
-            properties: { 
-              id: { type: Type.STRING }, 
-              centerId: { type: Type.STRING },
-              point1Id: { type: Type.STRING },
-              point2Id: { type: Type.STRING },
-              isRightAngle: { type: Type.BOOLEAN },
-              color: { type: Type.STRING }
-            },
-            required: ["id", "centerId", "point1Id", "point2Id"]
-          } 
-        },
-        texts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } }
-      },
-      required: ["points", "segments", "circles", "angles", "texts"]
-    },
-    explanation: { type: Type.STRING }
-  },
-  required: ["geometry", "explanation"]
-};
-
 export const parseGeometryProblem = async (
   text: string,
   base64Image?: string,
@@ -170,52 +78,118 @@ export const parseGeometryProblem = async (
         systemInstruction: SYSTEM_INSTRUCTION,
         thinkingConfig: { thinkingBudget: 16000 },
         responseMimeType: "application/json",
-        responseSchema: geometrySchema
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            geometry: {
+              type: Type.OBJECT,
+              properties: {
+                points: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      x: { type: Type.NUMBER },
+                      y: { type: Type.NUMBER },
+                      label: { type: Type.STRING },
+                      color: { type: Type.STRING }
+                    },
+                    required: ["id", "x", "y", "label"]
+                  }
+                },
+                segments: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      startPointId: { type: Type.STRING },
+                      endPointId: { type: Type.STRING },
+                      style: { type: Type.STRING },
+                      color: { type: Type.STRING }
+                    },
+                    required: ["id", "startPointId", "endPointId", "style"]
+                  }
+                },
+                lines: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } },
+                circles: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      centerId: { type: Type.STRING },
+                      radiusValue: { type: Type.NUMBER },
+                      color: { type: Type.STRING },
+                      style: { type: Type.STRING }
+                    },
+                    required: ["id", "centerId", "radiusValue"]
+                  }
+                },
+                ellipses: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      cx: { type: Type.NUMBER },
+                      cy: { type: Type.NUMBER },
+                      rx: { type: Type.NUMBER },
+                      ry: { type: Type.NUMBER },
+                      rotation: { type: Type.NUMBER },
+                      color: { type: Type.STRING },
+                      style: { type: Type.STRING }
+                    },
+                    required: ["id", "cx", "cy", "rx", "ry"]
+                  }
+                },
+                angles: { 
+                  type: Type.ARRAY, 
+                  items: { 
+                    type: Type.OBJECT, 
+                    properties: { 
+                      id: { type: Type.STRING }, 
+                      centerId: { type: Type.STRING },
+                      point1Id: { type: Type.STRING },
+                      point2Id: { type: Type.STRING },
+                      isRightAngle: { type: Type.BOOLEAN },
+                      color: { type: Type.STRING }
+                    },
+                    required: ["id", "centerId", "point1Id", "point2Id"]
+                  } 
+                },
+                texts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } }
+              },
+              required: ["points", "segments", "circles", "angles", "texts"]
+            },
+            explanation: { type: Type.STRING }
+          },
+          required: ["geometry", "explanation"]
+        }
       }
     });
 
     const jsonText = response.text || "{}";
-    let result = JSON.parse(jsonText);
+    const result = JSON.parse(jsonText);
     
-    // Post-processing: Ensure all arrays exist and elements have valid IDs
+    // Helper đảm bảo mảng tồn tại
     const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
     
     if (!result.geometry) result.geometry = {};
-    const geo = result.geometry;
-
-    ensureArray(geo, 'points');
-    ensureArray(geo, 'segments');
-    ensureArray(geo, 'lines');
-    ensureArray(geo, 'polygons'); // Schema didn't explicitly strict polygons but good to have
-    ensureArray(geo, 'circles');
-    ensureArray(geo, 'ellipses');
-    ensureArray(geo, 'angles');
-    ensureArray(geo, 'texts');
-    ensureArray(geo, 'functionGraphs');
-    ensureArray(geo, 'images');
-
-    // Ensure IDs are unique if AI generates duplicates or uses simple IDs like "A"
-    const idMap = new Map<string, string>();
     
-    // 1. Map Points
-    geo.points.forEach((p: any) => {
-        if (!p.id) p.id = generateId('p');
-        // AI often uses labels as IDs (e.g. "A"). Keep them if unique, but tracking is good practice.
-    });
-
-    // 2. Ensure other elements have IDs
-    ['segments', 'lines', 'circles', 'ellipses', 'angles', 'texts'].forEach(key => {
-        geo[key].forEach((el: any) => {
-            if (!el.id) el.id = generateId(key.slice(0, 3)); // seg, lin, cir...
-        });
-    });
+    ensureArray(result.geometry, 'points');
+    ensureArray(result.geometry, 'segments');
+    ensureArray(result.geometry, 'circles');
+    ensureArray(result.geometry, 'ellipses');
+    ensureArray(result.geometry, 'angles');
+    ensureArray(result.geometry, 'texts');
+    ensureArray(result.geometry, 'lines');
 
     return result;
 
   } catch (error) {
     console.error("Gemini Critical Error:", error);
-    // Trả về một đối tượng rỗng hợp lệ để App không crash, 
-    // nhưng ném lỗi để UI hiển thị thông báo.
-    throw new Error("Không thể giải bài toán này. Vui lòng kiểm tra lại đề bài hoặc thử lại sau.");
+    throw new Error("Không thể giải bài toán này. Vui lòng kiểm tra lại đề bài.");
   }
 };
