@@ -4,8 +4,7 @@ import { generateId } from "../utils/geometry";
 
 // --- CẤU HÌNH "HỒN" (Logic Toán Học & Schema) ---
 
-// Định nghĩa lại Enum Type để không cần import từ @google/genai
-// Điều này giúp Vercel build được mà không cần cài SDK
+// 1. Mock Type Enum (Để không cần cài thư viện @google/genai trên Vercel)
 const Type = {
   STRING: "STRING",
   NUMBER: "NUMBER",
@@ -52,7 +51,6 @@ Trả về JSON tuân thủ schema. Đặc biệt chú ý:
 `;
 
 // Schema định nghĩa cấu trúc dữ liệu trả về
-// Sử dụng any hoặc object thường vì ta không import type Schema
 const geometrySchema = {
   type: Type.OBJECT,
   properties: {
@@ -147,12 +145,12 @@ const geometrySchema = {
 
 const sendToAIStudioProxy = (payload: any): Promise<string> => {
   return new Promise((resolve, reject) => {
-    // 1. Tạo ID duy nhất cho request này để khớp phản hồi
+    // 1. Tạo ID duy nhất cho request này
     const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // 2. Hàm lắng nghe phản hồi từ AI Studio
+    // 2. Hàm lắng nghe phản hồi
     const messageHandler = (event: MessageEvent) => {
-      // Chỉ nhận tin nhắn từ "Da" có đúng ID
+      // Kiểm tra xem message có phải là phản hồi cho request này không
       if (event.data?.requestId !== requestId) return;
 
       if (event.data.type === 'GEMINI_RESULT') {
@@ -160,25 +158,32 @@ const sendToAIStudioProxy = (payload: any): Promise<string> => {
         resolve(event.data.payload);
       } else if (event.data.type === 'GEMINI_ERROR') {
         window.removeEventListener('message', messageHandler);
-        reject(new Error(event.data.error || "Lỗi từ AI Studio"));
+        reject(new Error(event.data.error || "Lỗi từ AI Studio Proxy"));
       }
     };
 
     // 3. Đăng ký lắng nghe
     window.addEventListener('message', messageHandler);
 
-    // 4. Gửi yêu cầu lên "Da" (Parent Iframe)
-    // Lưu ý: targetOrigin '*' cho phép giao tiếp với AI Studio
-    window.parent.postMessage({
-      type: 'DRAW_REQUEST',
-      requestId: requestId,
-      payload: payload
-    }, '*');
+    // 4. Gửi yêu cầu lên Iframe cha (AI Studio)
+    // Lưu ý: targetOrigin '*' là cần thiết để postMessage hoạt động giữa các domain khác nhau
+    if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+            type: 'DRAW_REQUEST',
+            requestId: requestId,
+            payload: payload
+        }, '*');
+    } else {
+        // Fallback: Nếu không nằm trong iframe (ví dụ chạy dev localhost), báo lỗi
+        console.warn("Đang chạy ở chế độ Standalone (không có Parent Iframe). Chức năng AI sẽ không hoạt động nếu không có API Key.");
+        // Ở đây bạn có thể uncomment dòng dưới để test giả lập nếu cần
+        // reject(new Error("App đang chạy độc lập, không kết nối được với AI Studio Proxy."));
+    }
 
-    // 5. Timeout sau 60s nếu không thấy "Da" trả lời (VD: chạy localhost không có parent)
+    // 5. Timeout an toàn (60s cho model suy luận)
     setTimeout(() => {
       window.removeEventListener('message', messageHandler);
-      reject(new Error("Hết thời gian chờ phản hồi từ AI Studio. Bạn có đang chạy trong khung AI Studio không?"));
+      reject(new Error("Hết thời gian chờ phản hồi từ AI Studio. (Timeout 60s)"));
     }, 60000);
   });
 };
@@ -215,20 +220,21 @@ export const parseGeometryProblem = async (
   parts.push({ text: promptText });
 
   try {
-    // Thay vì gọi API trực tiếp, ta đóng gói và gửi cho "Da"
+    // Đóng gói yêu cầu để gửi sang "Da" (AI Studio)
     const payload = {
-      // Sử dụng model Thinking để thông minh hơn (phần Da sẽ xử lý logic budget)
-      model: 'gemini-2.0-flash-thinking-exp-01-21', 
+      model: 'gemini-3-pro-preview', // Dùng model mạnh nhất theo yêu cầu
       contents: { parts },
       responseSchema: geometrySchema,
       systemInstruction: SYSTEM_INSTRUCTION,
-      thinkingBudget: 16000 // Gửi kèm budget mong muốn
+      thinkingBudget: 16000 // Config cho dòng model suy luận (nếu AI Studio hỗ trợ pass qua)
     };
 
-    console.log("Đang gửi yêu cầu sang AI Studio Proxy...");
+    console.log("Đang gửi yêu cầu sang AI Studio Proxy...", payload.model);
+    
+    // Gọi qua cầu nối thay vì gọi trực tiếp
     const jsonText = await sendToAIStudioProxy(payload);
     
-    // Xử lý kết quả trả về từ Proxy
+    // Xử lý kết quả nhận được
     let result;
     try {
         result = JSON.parse(jsonText);
@@ -237,7 +243,7 @@ export const parseGeometryProblem = async (
         throw new Error("Dữ liệu trả về từ AI không đúng định dạng JSON.");
     }
     
-    // Post-processing: Đảm bảo dữ liệu an toàn để vẽ
+    // Helper đảm bảo mảng tồn tại (đề phòng AI trả về thiếu trường)
     const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
     
     if (!result.geometry) result.geometry = {};
@@ -251,9 +257,10 @@ export const parseGeometryProblem = async (
     ensureArray(geo, 'angles');
     ensureArray(geo, 'texts');
 
-    // Đảm bảo ID
+    // Đảm bảo ID duy nhất cho các phần tử mới
     geo.points.forEach((p: any) => { if (!p.id) p.id = generateId('p'); });
     ['segments', 'lines', 'circles', 'ellipses', 'angles', 'texts'].forEach(key => {
+        // @ts-ignore
         geo[key].forEach((el: any) => { if (!el.id) el.id = generateId(key.slice(0, 3)); });
     });
 
