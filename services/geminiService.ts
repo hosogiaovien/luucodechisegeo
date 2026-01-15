@@ -221,12 +221,16 @@ export const parseGeometryProblem = async (
 
   try {
     // Đóng gói yêu cầu để gửi sang "Da" (AI Studio)
+    // Cấu trúc payload khớp với cách gọi generateContent
     const payload = {
-      model: 'gemini-3-pro-preview', // Dùng model mạnh nhất theo yêu cầu
+      model: 'gemini-3-pro-preview', 
       contents: { parts },
-      responseSchema: geometrySchema,
-      systemInstruction: SYSTEM_INSTRUCTION,
-      thinkingBudget: 16000 // Config cho dòng model suy luận (nếu AI Studio hỗ trợ pass qua)
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION,
+        responseMimeType: "application/json",
+        responseSchema: geometrySchema,
+        thinkingConfig: { thinkingBudget: 16000 }
+      }
     };
 
     console.log("Đang gửi yêu cầu sang AI Studio Proxy...", payload.model);
@@ -261,7 +265,9 @@ export const parseGeometryProblem = async (
     geo.points.forEach((p: any) => { if (!p.id) p.id = generateId('p'); });
     ['segments', 'lines', 'circles', 'ellipses', 'angles', 'texts'].forEach(key => {
         // @ts-ignore
-        geo[key].forEach((el: any) => { if (!el.id) el.id = generateId(key.slice(0, 3)); });
+        if (geo[key]) {
+            geo[key].forEach((el: any) => { if (!el.id) el.id = generateId(key.slice(0, 3)); });
+        }
     });
 
     return result;
