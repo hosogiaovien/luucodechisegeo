@@ -1,9 +1,19 @@
 
-import { Type, Schema } from "@google/genai";
 import { AIResponse } from "../types";
 import { generateId } from "../utils/geometry";
 
 // --- CẤU HÌNH "HỒN" (Logic Toán Học & Schema) ---
+
+// Định nghĩa lại Enum Type để không cần import từ @google/genai
+// Điều này giúp Vercel build được mà không cần cài SDK
+const Type = {
+  STRING: "STRING",
+  NUMBER: "NUMBER",
+  INTEGER: "INTEGER",
+  BOOLEAN: "BOOLEAN",
+  ARRAY: "ARRAY",
+  OBJECT: "OBJECT"
+};
 
 const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D) cấp Olympiad.
@@ -42,7 +52,8 @@ Trả về JSON tuân thủ schema. Đặc biệt chú ý:
 `;
 
 // Schema định nghĩa cấu trúc dữ liệu trả về
-const geometrySchema: Schema = {
+// Sử dụng any hoặc object thường vì ta không import type Schema
+const geometrySchema = {
   type: Type.OBJECT,
   properties: {
     geometry: {
