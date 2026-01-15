@@ -1,9 +1,9 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type, Schema } from "@google/genai";
 import { AIResponse } from "../types";
+import { generateId } from "../utils/geometry";
 
-// Sử dụng Gemini 3 Pro - Cấu hình tối ưu cho toán học đa dạng
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// --- CẤU HÌNH "HỒN" (Logic Toán Học & Schema) ---
 
 const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D) cấp Olympiad.
@@ -41,6 +41,139 @@ Trả về JSON tuân thủ schema. Đặc biệt chú ý:
 - "explanation": Giải thích ngắn gọn cách dựng (VD: "Dựng hình chóp S.ABCD với đáy là hình bình hành...").
 `;
 
+// Schema định nghĩa cấu trúc dữ liệu trả về
+const geometrySchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    geometry: {
+      type: Type.OBJECT,
+      properties: {
+        points: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              x: { type: Type.NUMBER },
+              y: { type: Type.NUMBER },
+              label: { type: Type.STRING },
+              color: { type: Type.STRING }
+            },
+            required: ["id", "x", "y", "label"]
+          }
+        },
+        segments: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              startPointId: { type: Type.STRING },
+              endPointId: { type: Type.STRING },
+              style: { type: Type.STRING },
+              color: { type: Type.STRING }
+            },
+            required: ["id", "startPointId", "endPointId", "style"]
+          }
+        },
+        lines: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } },
+        circles: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              centerId: { type: Type.STRING },
+              radiusValue: { type: Type.NUMBER },
+              color: { type: Type.STRING },
+              style: { type: Type.STRING }
+            },
+            required: ["id", "centerId", "radiusValue"]
+          }
+        },
+        ellipses: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              cx: { type: Type.NUMBER },
+              cy: { type: Type.NUMBER },
+              rx: { type: Type.NUMBER },
+              ry: { type: Type.NUMBER },
+              rotation: { type: Type.NUMBER },
+              color: { type: Type.STRING },
+              style: { type: Type.STRING }
+            },
+            required: ["id", "cx", "cy", "rx", "ry"]
+          }
+        },
+        angles: { 
+          type: Type.ARRAY, 
+          items: { 
+            type: Type.OBJECT, 
+            properties: { 
+              id: { type: Type.STRING }, 
+              centerId: { type: Type.STRING },
+              point1Id: { type: Type.STRING },
+              point2Id: { type: Type.STRING },
+              isRightAngle: { type: Type.BOOLEAN },
+              color: { type: Type.STRING }
+            },
+            required: ["id", "centerId", "point1Id", "point2Id"]
+          } 
+        },
+        texts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } }
+      },
+      required: ["points", "segments", "circles", "angles", "texts"]
+    },
+    explanation: { type: Type.STRING }
+  },
+  required: ["geometry", "explanation"]
+};
+
+// --- HÀM GIAO TIẾP VỚI "DA" (AI STUDIO) ---
+
+const sendToAIStudioProxy = (payload: any): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    // 1. Tạo ID duy nhất cho request này để khớp phản hồi
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // 2. Hàm lắng nghe phản hồi từ AI Studio
+    const messageHandler = (event: MessageEvent) => {
+      // Chỉ nhận tin nhắn từ "Da" có đúng ID
+      if (event.data?.requestId !== requestId) return;
+
+      if (event.data.type === 'GEMINI_RESULT') {
+        window.removeEventListener('message', messageHandler);
+        resolve(event.data.payload);
+      } else if (event.data.type === 'GEMINI_ERROR') {
+        window.removeEventListener('message', messageHandler);
+        reject(new Error(event.data.error || "Lỗi từ AI Studio"));
+      }
+    };
+
+    // 3. Đăng ký lắng nghe
+    window.addEventListener('message', messageHandler);
+
+    // 4. Gửi yêu cầu lên "Da" (Parent Iframe)
+    // Lưu ý: targetOrigin '*' cho phép giao tiếp với AI Studio
+    window.parent.postMessage({
+      type: 'DRAW_REQUEST',
+      requestId: requestId,
+      payload: payload
+    }, '*');
+
+    // 5. Timeout sau 60s nếu không thấy "Da" trả lời (VD: chạy localhost không có parent)
+    setTimeout(() => {
+      window.removeEventListener('message', messageHandler);
+      reject(new Error("Hết thời gian chờ phản hồi từ AI Studio. Bạn có đang chạy trong khung AI Studio không?"));
+    }, 60000);
+  });
+};
+
+// --- HÀM CHÍNH ---
+
 export const parseGeometryProblem = async (
   text: string,
   base64Image?: string,
@@ -71,125 +204,52 @@ export const parseGeometryProblem = async (
   parts.push({ text: promptText });
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview', 
+    // Thay vì gọi API trực tiếp, ta đóng gói và gửi cho "Da"
+    const payload = {
+      // Sử dụng model Thinking để thông minh hơn (phần Da sẽ xử lý logic budget)
+      model: 'gemini-2.0-flash-thinking-exp-01-21', 
       contents: { parts },
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        thinkingConfig: { thinkingBudget: 16000 },
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            geometry: {
-              type: Type.OBJECT,
-              properties: {
-                points: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      x: { type: Type.NUMBER },
-                      y: { type: Type.NUMBER },
-                      label: { type: Type.STRING },
-                      color: { type: Type.STRING }
-                    },
-                    required: ["id", "x", "y", "label"]
-                  }
-                },
-                segments: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      startPointId: { type: Type.STRING },
-                      endPointId: { type: Type.STRING },
-                      style: { type: Type.STRING },
-                      color: { type: Type.STRING }
-                    },
-                    required: ["id", "startPointId", "endPointId", "style"]
-                  }
-                },
-                lines: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } },
-                circles: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      centerId: { type: Type.STRING },
-                      radiusValue: { type: Type.NUMBER },
-                      color: { type: Type.STRING },
-                      style: { type: Type.STRING }
-                    },
-                    required: ["id", "centerId", "radiusValue"]
-                  }
-                },
-                ellipses: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      cx: { type: Type.NUMBER },
-                      cy: { type: Type.NUMBER },
-                      rx: { type: Type.NUMBER },
-                      ry: { type: Type.NUMBER },
-                      rotation: { type: Type.NUMBER },
-                      color: { type: Type.STRING },
-                      style: { type: Type.STRING }
-                    },
-                    required: ["id", "cx", "cy", "rx", "ry"]
-                  }
-                },
-                angles: { 
-                  type: Type.ARRAY, 
-                  items: { 
-                    type: Type.OBJECT, 
-                    properties: { 
-                      id: { type: Type.STRING }, 
-                      centerId: { type: Type.STRING },
-                      point1Id: { type: Type.STRING },
-                      point2Id: { type: Type.STRING },
-                      isRightAngle: { type: Type.BOOLEAN },
-                      color: { type: Type.STRING }
-                    },
-                    required: ["id", "centerId", "point1Id", "point2Id"]
-                  } 
-                },
-                texts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } }
-              },
-              required: ["points", "segments", "circles", "angles", "texts"]
-            },
-            explanation: { type: Type.STRING }
-          },
-          required: ["geometry", "explanation"]
-        }
-      }
-    });
+      responseSchema: geometrySchema,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      thinkingBudget: 16000 // Gửi kèm budget mong muốn
+    };
 
-    const jsonText = response.text || "{}";
-    const result = JSON.parse(jsonText);
+    console.log("Đang gửi yêu cầu sang AI Studio Proxy...");
+    const jsonText = await sendToAIStudioProxy(payload);
     
-    // Helper đảm bảo mảng tồn tại
+    // Xử lý kết quả trả về từ Proxy
+    let result;
+    try {
+        result = JSON.parse(jsonText);
+    } catch (e) {
+        console.error("Lỗi parse JSON từ Proxy:", jsonText);
+        throw new Error("Dữ liệu trả về từ AI không đúng định dạng JSON.");
+    }
+    
+    // Post-processing: Đảm bảo dữ liệu an toàn để vẽ
     const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
     
     if (!result.geometry) result.geometry = {};
-    
-    ensureArray(result.geometry, 'points');
-    ensureArray(result.geometry, 'segments');
-    ensureArray(result.geometry, 'circles');
-    ensureArray(result.geometry, 'ellipses');
-    ensureArray(result.geometry, 'angles');
-    ensureArray(result.geometry, 'texts');
-    ensureArray(result.geometry, 'lines');
+    const geo = result.geometry;
+
+    ensureArray(geo, 'points');
+    ensureArray(geo, 'segments');
+    ensureArray(geo, 'lines');
+    ensureArray(geo, 'circles');
+    ensureArray(geo, 'ellipses');
+    ensureArray(geo, 'angles');
+    ensureArray(geo, 'texts');
+
+    // Đảm bảo ID
+    geo.points.forEach((p: any) => { if (!p.id) p.id = generateId('p'); });
+    ['segments', 'lines', 'circles', 'ellipses', 'angles', 'texts'].forEach(key => {
+        geo[key].forEach((el: any) => { if (!el.id) el.id = generateId(key.slice(0, 3)); });
+    });
 
     return result;
 
-  } catch (error) {
-    console.error("Gemini Critical Error:", error);
-    throw new Error("Không thể giải bài toán này. Vui lòng kiểm tra lại đề bài.");
+  } catch (error: any) {
+    console.error("Gemini Bridge Error:", error);
+    throw new Error(error.message || "Không thể kết nối với AI Studio. Hãy đảm bảo bạn đang chạy link này trong khung Code Execution của Google AI Studio.");
   }
 };
