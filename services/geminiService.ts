@@ -2,76 +2,72 @@
 import { AIResponse, GeometryData, Point } from "../types";
 import { generateId } from "../utils/geometry";
 
-// --- HỆ THỐNG CHỈ DẪN CAO CẤP (SUPER PROMPT V7 - GEOMETRY SPECIALIST) ---
+// --- HỆ THỐNG CHỈ DẪN V8 - COORDINATE ANCHORING ---
 const SYSTEM_INSTRUCTION = `
-Bạn là chuyên gia hình học GeoPro. Nhiệm vụ: Chuyển đổi đề bài (Text hoặc Ảnh chứa Text) thành JSON để vẽ lên HTML5 Canvas.
+Bạn là GeoEngine - Máy tạo dữ liệu hình học.
+Nhiệm vụ: Chuyển đổi đề bài (Text/Ảnh) thành JSON tọa độ để vẽ lên Canvas 1000x800.
 
-QUY TRÌNH XỬ LÝ:
-1. NẾU LÀ ẢNH: Hãy đọc toàn bộ văn bản trong ảnh trước (OCR). Sau đó dùng văn bản đó để dựng hình.
-2. PHÂN TÍCH: Tìm các đối tượng: Điểm, Đoạn thẳng, Đường tròn, Góc vuông.
-3. TỌA ĐỘ: Hệ quy chiếu Canvas 1000x800. Gốc (0,0) ở góc trên trái. Hãy trải hình ra giữa tâm (500, 400).
+QUY TẮC TỌA ĐỘ (BẮT BUỘC):
+1. Canvas: Rộng 1000, Cao 800.
+2. Điểm Gốc: Luôn đặt điểm quan trọng nhất (Tâm đường tròn hoặc Đỉnh tam giác) tại (500, 400).
+3. Đơn vị: 1 đơn vị = 1 pixel. Độ dài cạnh trung bình: 200-300px.
 
-CẤU TRÚC JSON BẮT BUỘC (Tuyệt đối tuân thủ):
+KHI GẶP CÁC HÌNH CƠ BẢN, HÃY DÙNG TỌA ĐỘ MẪU SAU (Thay tên điểm tương ứng):
+- Tam giác đều ABC (A ở trên): A(500, 250), B(350, 550), C(650, 550).
+- Tam giác vuông ABC (Vuông tại A): A(400, 500), B(400, 200), C(800, 500).
+- Đường tròn (O): Tâm O(500, 400), Bán kính 150.
+- Hình vuông ABCD: A(350, 250), B(650, 250), C(650, 550), D(350, 550).
+
+CẤU TRÚC JSON OUTPUT (Chỉ trả về JSON này, không Markdown):
 {
   "geometry": {
     "points": [
-      { "id": "A", "x": 500, "y": 200, "label": "A" },
-      { "id": "O", "x": 500, "y": 400, "label": "O" }
+      { "id": "p1", "label": "A", "x": 500, "y": 250 },
+      { "id": "p2", "label": "B", "x": 350, "y": 550 }
     ],
     "segments": [
-      { "startPointId": "A", "endPointId": "B", "style": "solid" } 
+      { "startPointId": "p1", "endPointId": "p2" }
     ],
     "circles": [
-      { "centerId": "O", "radiusValue": 150, "label": "Đường tròn (O)" }
+      { "centerId": "p1", "radiusValue": 150 }
     ],
     "angles": [
-      { "centerId": "A", "point1Id": "B", "point2Id": "C", "isRightAngle": true }
+      { "centerId": "p1", "point1Id": "p2", "point2Id": "p3", "isRightAngle": true }
     ]
   },
-  "explanation": "Giải thích ngắn gọn cách dựng."
+  "explanation": "Tóm tắt ngắn gọn: Dựng tam giác đều ABC."
 }
 
-LUẬT VẼ HÌNH:
-- Tam giác ABC: Phải có 3 đoạn AB, BC, CA.
-- Đường tròn (O): Phải tạo điểm O trước, sau đó tạo circle tham chiếu đến O.
-- Vuông góc tại A: Tạo object trong mảng "angles" với "isRightAngle": true.
-- Tuyệt đối KHÔNG trả về Markdown, chỉ trả về JSON thuần.
+YÊU CẦU XỬ LÝ ẢNH:
+- Nếu là ảnh: Hãy trích xuất TÊN ĐIỂM và QUAN HỆ HÌNH HỌC (vuông góc, song song, tiếp tuyến).
+- Sau đó map vào các TỌA ĐỘ MẪU ở trên. Đừng cố tính toán chính xác tuyệt đối, hãy ưu tiên hình vẽ ĐẸP và CÂN ĐỐI.
 `;
 
-/**
- * Hàm làm sạch và trích xuất JSON
- */
 function extractAndParseJSON(text: string): any {
     if (!text || typeof text !== 'string') return null;
-
     let jsonString = text;
-    // Cố gắng tìm khối JSON giữa các dấu ngoặc
     const firstBrace = text.indexOf('{');
     const lastBrace = text.lastIndexOf('}');
-    
     if (firstBrace !== -1 && lastBrace !== -1) {
         jsonString = text.substring(firstBrace, lastBrace + 1);
     }
-
-    // Xóa nhiễu Markdown
+    // Cleanup
     jsonString = jsonString
         .replace(/```json/gi, '')
         .replace(/```/g, '')
-        .replace(/\\n/g, ' ') // Xóa xuống dòng trong string
-        .trim();
+        .replace(/\n/g, '')
+        .replace(/,\s*}/g, '}')
+        .replace(/,\s*]/g, ']');
 
     try {
         return JSON.parse(jsonString);
     } catch (e) {
-        console.warn("JSON chuẩn thất bại, thử sửa lỗi cú pháp...", e);
+        // Cố gắng cứu JSON lỗi nhẹ
         try {
-            // Sửa lỗi thiếu ngoặc kép ở key
-            jsonString = jsonString.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
-            // Sửa lỗi dấu phẩy thừa
-            jsonString = jsonString.replace(/,(\s*[}\]])/g, '$1');
-            return JSON.parse(jsonString);
-        } catch (e2) {
-            return null; 
+            const fixed = jsonString.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":');
+            return JSON.parse(fixed);
+        } catch(e2) {
+            return null;
         }
     }
 }
@@ -84,12 +80,11 @@ function removeVietnameseTones(str: string): string {
     str = str.replace(/ù|ú|ụ|ủ|ũ|ư|ừ|ứ|ự|ử|ữ/g, "u");
     str = str.replace(/ỳ|ý|ỵ|ỷ|ỹ/g, "y");
     str = str.replace(/đ/g, "d");
-    str = str.toUpperCase(); // Chuyển hết về chữ hoa để dễ regex
+    str = str.toUpperCase();
     return str;
 }
 
-// --- BỘ DỰNG HÌNH THỦ CÔNG (FALLBACK ENGINE V2) ---
-// Được kích hoạt khi AI thất bại hoặc trả về dữ liệu thiếu
+// --- BỘ DỰNG HÌNH THỦ CÔNG (FALLBACK ENGINE V3) ---
 function manualGeometryExtraction(text: string): GeometryData {
     const cleanText = removeVietnameseTones(text);
     const geometry: GeometryData = {
@@ -100,23 +95,20 @@ function manualGeometryExtraction(text: string): GeometryData {
     const labelMap: Record<string, any> = {};
     const center = { x: 500, y: 400 };
 
-    // Helper tạo điểm
     const getOrCreatePoint = (label: string, x?: number, y?: number) => {
         if (labelMap[label]) return labelMap[label];
-        const px = x ?? (center.x + (Math.random() - 0.5) * 400);
-        const py = y ?? (center.y + (Math.random() - 0.5) * 300);
+        // Nếu không có tọa độ, random nhẹ quanh tâm để không trùng nhau
+        const px = x ?? (center.x + (Math.random() - 0.5) * 200);
+        const py = y ?? (center.y + (Math.random() - 0.5) * 200);
         const p = { 
-            id: generateId('p_man'), 
-            x: px, y: py, 
-            label: label, 
-            color: 'black', radius: 4
+            id: generateId('p_man'), x: px, y: py, label: label, 
+            color: 'black', radius: 4 
         };
         geometry.points.push(p);
         labelMap[label] = p;
         return p;
     };
 
-    // Helper nối điểm
     const ensureSegment = (lbl1: string, lbl2: string) => {
         const p1 = getOrCreatePoint(lbl1);
         const p2 = getOrCreatePoint(lbl2);
@@ -124,88 +116,84 @@ function manualGeometryExtraction(text: string): GeometryData {
             (s.startPointId === p1.id && s.endPointId === p2.id) || 
             (s.startPointId === p2.id && s.endPointId === p1.id)
         );
-        if (!exists) {
-            geometry.segments.push({ 
-                id: generateId('s'), 
-                startPointId: p1.id, endPointId: p2.id, 
-                style: 'solid', color: 'black' 
-            });
-        }
+        if (!exists) geometry.segments.push({ id: generateId('s'), startPointId: p1.id, endPointId: p2.id, style: 'solid', color: 'black' });
     };
 
-    // 1. PHÁT HIỆN ĐƯỜNG TRÒN (Quan trọng)
-    // Regex: DUONG TRON (O), DUONG TRON TAM I, (O;R)
-    const circleRegex = /(?:DUONG TRON|TAM)\s*\(?([A-Z])\)?/g;
+    // 1. TAM GIÁC (Ưu tiên cao nhất để định hình khung)
+    // Regex bắt: TAM GIAC ABC, TAM GIAC VUONG ABC
+    const triRegex = /TAM GIAC(?:\s*VUONG|(?:\s*DEU)|(?:\s*CAN))?\s+([A-Z])([A-Z])([A-Z])/g;
     let match;
+    while ((match = triRegex.exec(cleanText)) !== null) {
+        const [_, A, B, C] = match;
+        // Template Tam giác
+        getOrCreatePoint(A, 500, 200);
+        getOrCreatePoint(B, 300, 550);
+        getOrCreatePoint(C, 700, 550);
+        ensureSegment(A, B); ensureSegment(B, C); ensureSegment(C, A);
+    }
+
+    // 2. HÌNH VUÔNG / CHỮ NHẬT
+    const quadRegex = /(?:HINH VUONG|HINH CHU NHAT|TU GIAC)\s+([A-Z])([A-Z])([A-Z])([A-Z])/g;
+    while ((match = quadRegex.exec(cleanText)) !== null) {
+        const [_, A, B, C, D] = match;
+        // Template Hình chữ nhật
+        getOrCreatePoint(A, 300, 250);
+        getOrCreatePoint(B, 700, 250);
+        getOrCreatePoint(C, 700, 550);
+        getOrCreatePoint(D, 300, 550);
+        ensureSegment(A, B); ensureSegment(B, C); ensureSegment(C, D); ensureSegment(D, A);
+    }
+
+    // 3. ĐƯỜNG TRÒN (Quan trọng: Bắt cả dạng (O) và (O;R))
+    // Regex: DUONG TRON (O), DUONG TRON TAM I
+    const circleRegex = /(?:DUONG TRON|NOI TIEP|NGOAI TIEP)\s*(?:\(T?A?M?\s*([A-Z]))/g;
     while ((match = circleRegex.exec(cleanText)) !== null) {
-        const lbl = match[1];
+        const lbl = match[1]; // Tên tâm (O, I...)
         const p = getOrCreatePoint(lbl, center.x, center.y); // Tâm mặc định ở giữa
         geometry.circles.push({
             id: generateId('c'),
             centerId: p.id,
-            radiusValue: 150, // Bán kính mặc định
+            radiusValue: 150,
             color: 'black',
             style: 'solid'
         });
     }
-
-    // 2. PHÁT HIỆN TAM GIÁC
-    const triRegex = /TAM GIAC ([A-Z])([A-Z])([A-Z])/g;
-    while ((match = triRegex.exec(cleanText)) !== null) {
-        const [_, A, B, C] = match;
-        // Dựng tam giác đều quanh tâm (nếu chưa có tọa độ)
-        if (!labelMap[A] && !labelMap[B] && !labelMap[C]) {
-            const r = 180;
-            getOrCreatePoint(A, center.x, center.y - r);
-            getOrCreatePoint(B, center.x - r * 0.866, center.y + r * 0.5);
-            getOrCreatePoint(C, center.x + r * 0.866, center.y + r * 0.5);
-        } else {
-            getOrCreatePoint(A); getOrCreatePoint(B); getOrCreatePoint(C);
-        }
-        ensureSegment(A, B); ensureSegment(B, C); ensureSegment(C, A);
-    }
-
-    // 3. PHÁT HIỆN TỨ GIÁC / HÌNH CHỮ NHẬT / VUÔNG
-    const quadRegex = /(?:TU GIAC|HINH CHU NHAT|HINH VUONG|HINH THANG) ([A-Z])([A-Z])([A-Z])([A-Z])/g;
-    while ((match = quadRegex.exec(cleanText)) !== null) {
-        const [_, A, B, C, D] = match;
-        if (!labelMap[A]) { // Nếu chưa có, vẽ hình chữ nhật
-            const w = 200, h = 140;
-            getOrCreatePoint(A, center.x - w/2, center.y - h/2);
-            getOrCreatePoint(B, center.x + w/2, center.y - h/2);
-            getOrCreatePoint(C, center.x + w/2, center.y + h/2);
-            getOrCreatePoint(D, center.x - w/2, center.y + h/2);
-        }
-        ensureSegment(A, B); ensureSegment(B, C); ensureSegment(C, D); ensureSegment(D, A);
-    }
-
-    // 4. GÓC VUÔNG (VUONG TAI A)
-    const rightAngleRegex = /VUONG (?:TAI|O) ([A-Z])/g;
-    while ((match = rightAngleRegex.exec(cleanText)) !== null) {
-        const centerLbl = match[1];
-        // Tìm 2 điểm lân cận để tạo góc.
-        // Logic đơn giản: Tìm 2 điểm bất kỳ đã nối với tâm này.
-        const centerPt = getOrCreatePoint(centerLbl);
-        const neighbors = geometry.segments
-            .filter(s => s.startPointId === centerPt.id || s.endPointId === centerPt.id)
-            .map(s => s.startPointId === centerPt.id ? s.endPointId : s.startPointId);
-        
-        if (neighbors.length >= 2) {
-            geometry.angles.push({
-                id: generateId('ang'),
-                centerId: centerPt.id,
-                point1Id: neighbors[0],
-                point2Id: neighbors[1],
-                isRightAngle: true,
-                color: 'black', strokeWidth: 1.5
-            });
+    // Bắt dạng ngắn gọn: Cho đường tròn (O)
+    const circleShortRegex = /TRON\s*\(([A-Z])\)/g;
+    while ((match = circleShortRegex.exec(cleanText)) !== null) {
+        if (!labelMap[match[1]]) { // Chỉ tạo nếu chưa có
+            const p = getOrCreatePoint(match[1], center.x, center.y);
+            geometry.circles.push({ id: generateId('c'), centerId: p.id, radiusValue: 150 });
         }
     }
 
-    // 5. CÁC CỤM TỪ NỐI ĐIỂM (DOAN THANG AB, CANH AC)
-    const segRegex = /(?:DOAN|CANH|DUONG|NOI) ([A-Z])([A-Z])/g;
+    // 4. ĐOẠN THẲNG LẺ
+    const segRegex = /(?:DOAN|CANH|NOI)\s+([A-Z])([A-Z])/g;
     while ((match = segRegex.exec(cleanText)) !== null) {
         ensureSegment(match[1], match[2]);
+    }
+
+    // 5. GÓC VUÔNG
+    const rightAngleRegex = /VUONG TAI ([A-Z])/g;
+    while ((match = rightAngleRegex.exec(cleanText)) !== null) {
+        const centerLbl = match[1];
+        if (labelMap[centerLbl]) {
+            const centerPt = labelMap[centerLbl];
+            // Tìm 2 điểm hàng xóm
+            const neighbors = geometry.segments
+                .filter(s => s.startPointId === centerPt.id || s.endPointId === centerPt.id)
+                .map(s => s.startPointId === centerPt.id ? s.endPointId : s.startPointId);
+            
+            if (neighbors.length >= 2) {
+                geometry.angles.push({
+                    id: generateId('ang'),
+                    centerId: centerPt.id,
+                    point1Id: neighbors[0],
+                    point2Id: neighbors[1],
+                    isRightAngle: true, color: 'black'
+                });
+            }
+        }
     }
 
     return geometry;
@@ -224,30 +212,26 @@ export const parseGeometryProblem = async (
   
   // Prompt nhấn mạnh việc phải đọc text từ ảnh
   const promptText = `
-    Đề bài toán: "${text}"
+    Đề bài: "${text}"
+    1. Đọc kỹ đề bài (Text hoặc Chữ trong ảnh).
+    2. Xác định dạng hình học chính (Tam giác, Đường tròn, Tứ giác...).
+    3. Trả về JSON chứa danh sách điểm (points) với tọa độ cụ thể (x, y) để vẽ hình.
     
-    YÊU CẦU QUAN TRỌNG:
-    1. Nếu có ảnh: Hãy đọc kỹ chữ trong ảnh (OCR) để hiểu đề bài. Đừng chỉ nhìn hình vẽ.
-    2. Trả về JSON để vẽ lại hình minh họa cho bài toán này.
-    3. Cần xác định rõ:
-       - Đường tròn (circles): Phải có centerId và radiusValue.
-       - Góc vuông (angles): isRightAngle = true.
-       - Điểm và Đoạn thẳng nối chúng.
-    
-    Nếu không tìm thấy thông tin cụ thể, hãy TỰ GIẢ ĐỊNH tọa độ hợp lý để vẽ một hình minh họa đẹp.
+    Lưu ý: Nếu đề bài không cho tọa độ, hãy TỰ GIẢ ĐỊNH tọa độ sao cho hình vẽ cân đối ở giữa Canvas 1000x800.
+    Ưu tiên: 
+    - Tâm đường tròn hoặc trọng tâm hình ở (500, 400).
+    - Hình to rõ ràng (cạnh ~200-300 đơn vị).
   `;
   parts.push({ text: promptText });
 
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      const TIMEOUT = 50000; // 50s
+      const TIMEOUT = 60000; // Tăng timeout lên 60s
 
       const finalize = (resultData: GeometryData, explanation: string) => {
           cleanup();
-          // Đảm bảo dữ liệu mảng luôn tồn tại
           ['points', 'segments', 'circles', 'polygons', 'angles', 'ellipses', 'texts', 'lines', 'rays'].forEach(key => {
               if (!(resultData as any)[key]) (resultData as any)[key] = [];
-              // Gán ID nếu thiếu
               (resultData as any)[key].forEach((item: any) => {
                   if (!item.id) item.id = generateId('ai');
               });
@@ -271,71 +255,58 @@ export const parseGeometryProblem = async (
 
                   console.log("AI Raw:", rawText);
 
-                  // 1. Parse JSON từ AI
+                  // 1. Parse JSON
                   let parsed = extractAndParseJSON(rawText);
                   
-                  // 2. Kiểm tra chất lượng dữ liệu AI
-                  let aiSuccess = parsed && parsed.geometry && parsed.geometry.points && parsed.geometry.points.length > 0;
-
-                  // 3. Chạy bộ quét thủ công (Manual Engine) để bổ sung hoặc thay thế
-                  const combinedText = text + " " + rawText; // Dùng cả lời giải AI để tìm từ khóa
+                  // 2. Chạy Manual Engine song song để đối chiếu
+                  const combinedText = text + " " + rawText; 
                   const manualGeo = manualGeometryExtraction(combinedText);
 
-                  if (aiSuccess) {
-                      // Hợp nhất: Nếu AI thiếu đường tròn/góc mà Manual tìm thấy -> Bổ sung vào
-                      if (parsed.geometry.circles.length === 0 && manualGeo.circles.length > 0) {
-                          // Map lại ID điểm từ Manual sang AI (nếu trùng Label)
+                  // 3. Logic Hợp nhất thông minh
+                  if (parsed && parsed.geometry && parsed.geometry.points && parsed.geometry.points.length > 0) {
+                      // AI thành công -> Kiểm tra xem có thiếu sót gì so với Manual không
+                      
+                      // Nếu AI thiếu đường tròn mà Manual tìm thấy -> Thêm vào
+                      if ((!parsed.geometry.circles || parsed.geometry.circles.length === 0) && manualGeo.circles.length > 0) {
+                          if (!parsed.geometry.circles) parsed.geometry.circles = [];
+                          // Map ID tâm từ Manual sang AI
                           manualGeo.circles.forEach(mc => {
-                              const manualCenter = manualGeo.points.find(p => p.id === mc.centerId);
-                              const aiCenter = parsed.geometry.points.find((p: any) => p.label === manualCenter?.label);
+                              const mCenter = manualGeo.points.find(p => p.id === mc.centerId);
+                              const aiCenter = parsed.geometry.points.find((p: any) => p.label === mCenter?.label);
                               if (aiCenter) {
                                   mc.centerId = aiCenter.id;
+                                  parsed.geometry.circles.push(mc);
+                              } else {
+                                  // Nếu AI chưa có tâm này, thêm cả điểm tâm vào
+                                  const newId = generateId('p_added');
+                                  parsed.geometry.points.push({ ...mCenter, id: newId });
+                                  mc.centerId = newId;
                                   parsed.geometry.circles.push(mc);
                               }
                           });
                       }
-                      
-                      // Bổ sung góc vuông nếu AI quên
-                      if (manualGeo.angles.length > 0) {
-                           manualGeo.angles.forEach(ma => {
-                               if (ma.isRightAngle) {
-                                   const mCenter = manualGeo.points.find(p => p.id === ma.centerId);
-                                   const aiCenter = parsed.geometry.points.find((p: any) => p.label === mCenter?.label);
-                                   if (aiCenter) {
-                                       // Tìm 2 điểm nối với tâm trong AI
-                                       const neighbors = parsed.geometry.segments
-                                            .filter((s: any) => s.startPointId === aiCenter.id || s.endPointId === aiCenter.id)
-                                            .map((s: any) => s.startPointId === aiCenter.id ? s.endPointId : s.startPointId);
-                                       if (neighbors.length >= 2) {
-                                           ma.centerId = aiCenter.id;
-                                           ma.point1Id = neighbors[0];
-                                           ma.point2Id = neighbors[1];
-                                           parsed.geometry.angles.push(ma);
-                                       }
-                                   }
-                               }
-                           });
-                      }
 
                       finalize(parsed.geometry, parsed.explanation || "AI đã dựng hình.");
                   } else {
-                      // Nếu AI thất bại hoàn toàn -> Dùng Manual
+                      // AI thất bại -> Dùng hoàn toàn Manual
+                      console.warn("AI JSON invalid. Using Fallback.");
                       if (manualGeo.points.length > 0) {
-                          finalize(manualGeo, "AI không trả về hình vẽ. Hệ thống đã tự động dựng hình từ văn bản.");
+                          finalize(manualGeo, "AI không trả về dữ liệu chuẩn. Hệ thống đã tự động dựng hình từ phân tích văn bản.");
                       } else {
-                          finalize({ points: [], segments: [] } as any, "Không thể dựng hình từ dữ liệu này.");
+                          // Fallback cuối cùng: Vẽ một tam giác mặc định nếu không tìm thấy gì
+                          const defaultGeo = manualGeometryExtraction("TAM GIAC ABC");
+                          finalize(defaultGeo, "Không tìm thấy thông tin hình học. Đã vẽ hình mẫu.");
                       }
                   }
 
               } catch (error) {
                   console.error("Processing Error:", error);
                   const manualGeo = manualGeometryExtraction(text);
-                  finalize(manualGeo, "Lỗi xử lý. Đang hiển thị hình vẽ phác thảo.");
+                  finalize(manualGeo, "Lỗi xử lý AI. Đang hiển thị hình phác thảo.");
               }
           }
 
           if (event.data.type === 'GEMINI_ERROR' && event.data.requestId === requestId) {
-              console.warn("AI API Error -> Fallback manual");
               const manualGeo = manualGeometryExtraction(text);
               finalize(manualGeo, "Lỗi kết nối AI. Đã chuyển sang chế độ dựng hình Offline.");
           }
@@ -343,7 +314,6 @@ export const parseGeometryProblem = async (
 
       window.addEventListener('message', handleMessage);
       const timeoutId = setTimeout(() => {
-          console.warn("Timeout -> Fallback manual");
           const manualGeo = manualGeometryExtraction(text);
           finalize(manualGeo, "Hết thời gian chờ. Đang hiển thị hình phác thảo.");
       }, TIMEOUT);
