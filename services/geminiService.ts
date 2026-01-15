@@ -3,6 +3,7 @@ import { AIResponse, GeometryData, Point } from "../types";
 import { generateId } from "../utils/geometry";
 
 // --- HỆ THỐNG CHỈ DẪN CAO CẤP (SUPER PROMPT V5 - GEOMETRY ENGINE) ---
+// Đây là phần "Hồn" quan trọng nhất, nằm an toàn trên Vercel
 const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Pro" - Một Engine tính toán hình học chính xác tuyệt đối.
 Nhiệm vụ: Chuyển đổi đề bài toán học (Văn bản hoặc Hình ảnh) thành dữ liệu JSON để render lên Canvas SVG (1000x800).
@@ -46,15 +47,6 @@ Nhiệm vụ: Chuyển đổi đề bài toán học (Văn bản hoặc Hình �
 --- XỬ LÝ ĐẦU VÀO ---
 - **NẾU LÀ ẢNH**: Phân tích topo học của hình. Điểm nào nối điểm nào? Có góc vuông không? Có song song không? Dựng lại hình chuẩn dựa trên logic đó (đừng copy độ méo của ảnh tay vẽ).
 - **NẾU LÀ TEXT**: Phân tích từ khóa: "Vuông tại", "Đều", "Cân", "Nội tiếp", "Trọng tâm".
-  - "Trọng tâm G": Tọa độ G phải bằng trung bình cộng tọa độ 3 đỉnh.
-  - "Trung điểm M": M = (A+B)/2.
-
---- DANH SÁCH ĐỐI TƯỢNG HỖ TRỢ ---
-- points, segments (đoạn thẳng), lines (đường thẳng), rays (tia).
-- circles (đường tròn), arcs (cung), ellipses (elip).
-- polygons (đa giác tô màu).
-- angles (ký hiệu góc - isRightAngle: true nếu vuông).
-- cylinders, cones, spheres (nếu là bài toán không gian).
 `;
 
 function cleanAndParseJSON(text: string): any {
@@ -75,7 +67,6 @@ function cleanAndParseJSON(text: string): any {
     } catch (e) {
         console.warn("JSON lỗi nhẹ, đang fix...", e);
         try {
-            // Fix các lỗi thường gặp của AI
             clean = clean
                 .replace(/,\s*([\]}])/g, '$1') // Xóa dấu phẩy thừa cuối mảng/object
                 .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":') // Quote key
@@ -92,10 +83,9 @@ function removeVietnameseTones(str: string): string {
     return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
 }
 
-// --- LOGIC HẬU XỬ LÝ THÔNG MINH (THE BRAIN) ---
+// --- LOGIC HẬU XỬ LÝ (GIỮ NGUYÊN ĐỂ ĐẢM BẢO CHẤT LƯỢNG HÌNH) ---
 function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
     if (!geometry.points) return;
-    
     const textUpper = removeVietnameseTones(problemText).toUpperCase();
     const idMap: Record<string, any> = {};
     const labelMap: Record<string, any> = {};
@@ -105,7 +95,6 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         if (p.label) labelMap[p.label.toUpperCase()] = p;
     });
 
-    // Helper: Thêm đoạn thẳng nếu chưa có
     const ensureSegment = (id1: string, id2: string) => {
         if (!id1 || !id2 || id1 === id2) return;
         if (!geometry.segments) geometry.segments = [];
@@ -122,10 +111,8 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         }
     };
 
-    // Helper: Thêm ký hiệu góc vuông
     const ensureRightAngle = (centerId: string, p1Id: string, p2Id: string) => {
         if (!geometry.angles) geometry.angles = [];
-        // Kiểm tra xem đã có góc tại đỉnh này chưa
         const exists = geometry.angles.some((a: any) => a.centerId === centerId);
         if (!exists) {
             geometry.angles.push({
@@ -136,7 +123,6 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         }
     };
 
-    // 1. Tự động nối Tam giác (ABC)
     const triRegex = /TAM GIAC ([A-Z]{3})/g;
     let match;
     while ((match = triRegex.exec(textUpper)) !== null) {
@@ -146,13 +132,11 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         if (labelMap[C] && labelMap[A]) ensureSegment(labelMap[C].id, labelMap[A].id);
     }
 
-    // 2. Xử lý "Vuông tại A"
     const rightAtRegex = /VUONG TAI ([A-Z])/g;
     while ((match = rightAtRegex.exec(textUpper)) !== null) {
         const centerLbl = match[1];
         const centerPt = labelMap[centerLbl];
         if (centerPt) {
-            // Tìm 2 điểm nối với tâm này để tạo góc
             const connectedPoints = (geometry.segments || [])
                 .filter((s: any) => s.startPointId === centerPt.id || s.endPointId === centerPt.id)
                 .map((s: any) => s.startPointId === centerPt.id ? s.endPointId : s.startPointId);
@@ -162,53 +146,17 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
             }
         }
     }
-
-    // 3. Xử lý "Đường cao AH" (nghĩa là AH vuông góc BC)
-    const altitudeRegex = /DUONG CAO ([A-Z])([A-Z])/g;
-    while ((match = altitudeRegex.exec(textUpper)) !== null) {
-        const [Start, End] = [match[1], match[2]]; // Ví dụ A, H
-        const pStart = labelMap[Start];
-        const pEnd = labelMap[End]; // Chân đường cao H
-        
-        if (pStart && pEnd) {
-            ensureSegment(pStart.id, pEnd.id);
-            // Tìm đường thẳng mà H nằm trên đó (khác AH). Thường là cạnh đối diện.
-            // Đơn giản hóa: Tìm 1 điểm X bất kỳ nối với H (khác A) -> Tạo góc vuông A-H-X
-            const otherPoint = (geometry.segments || [])
-                .filter((s: any) => (s.startPointId === pEnd.id || s.endPointId === pEnd.id))
-                .map((s: any) => s.startPointId === pEnd.id ? s.endPointId : s.startPointId)
-                .find((id: string) => id !== pStart.id);
-            
-            if (otherPoint) {
-                ensureRightAngle(pEnd.id, pStart.id, otherPoint);
-            }
-        }
-    }
-
-    // 4. Xử lý "Trọng tâm G" (Recalculate G coordinates)
-    const centroidRegex = /TRONG TAM ([A-Z])/g; // Ví dụ G
-    // Cần biết trọng tâm của tam giác nào. Thường là tam giác chính được nhắc đến đầu tiên.
-    // Logic heuristic: Tìm 3 điểm tạo thành chu trình (tam giác) và G nằm trong đó.
-    // (Phần này nâng cao, tạm thời để AI tự tính, chỉ fix nếu AI sai quá nhiều)
 }
 
-// --- CHUẨN HÓA & KHẮC PHỤC LỖI TỌA ĐỘ ---
 function fixAndScaleGeometry(geometry: any) {
     if (!geometry.points || geometry.points.length === 0) return;
-
-    // 1. Kiểm tra tọa độ trùng nhau (Clumping) -> Phân tán ra
     const seen = new Set();
-    geometry.points.forEach((p: any, idx: number) => {
+    geometry.points.forEach((p: any) => {
         const key = `${Math.round(p.x)},${Math.round(p.y)}`;
-        if (seen.has(key)) {
-            // Dịch chuyển nhẹ để không trùng tuyệt đối
-            p.x += (Math.random() - 0.5) * 50; 
-            p.y += (Math.random() - 0.5) * 50;
-        }
+        if (seen.has(key)) { p.x += (Math.random() - 0.5) * 50; p.y += (Math.random() - 0.5) * 50; }
         seen.add(key);
     });
 
-    // 2. Tính Bounding Box để Scale về giữa màn hình
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     geometry.points.forEach((p: any) => {
         if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
@@ -217,26 +165,20 @@ function fixAndScaleGeometry(geometry: any) {
 
     const width = maxX - minX;
     const height = maxY - minY;
-    
-    // Nếu hình quá nhỏ (do AI tính theo đơn vị 1, 2, 3...) -> Phóng to
-    // Nếu hình quá lớn hoặc lệch -> Thu nhỏ & Center
     const TARGET_W = 600;
     const TARGET_H = 500;
     const CENTER_X = 500;
     const CENTER_Y = 400;
-
-    // Tránh chia cho 0
     const safeW = width === 0 ? 1 : width;
     const safeH = height === 0 ? 1 : height;
 
     let scale = 1;
-    if (safeW < 100 && safeH < 100) {
-        scale = 50; // Giả sử AI dùng đơn vị cm, nhân lên pixel
-    } else {
+    if (safeW < 100 && safeH < 100) scale = 50;
+    else {
         const scaleX = TARGET_W / safeW;
         const scaleY = TARGET_H / safeH;
-        scale = Math.min(scaleX, scaleY, 1.5); // Max scale 1.5 để không vỡ
-        if (scale < 0.2) scale = 0.2; // Min scale
+        scale = Math.min(scaleX, scaleY, 1.5);
+        if (scale < 0.2) scale = 0.2;
     }
 
     const currentCX = (minX + maxX) / 2;
@@ -258,7 +200,6 @@ function resolveGeometryReferences(geometry: any) {
         if (p.label) labelToId[p.label.toUpperCase()] = p.id;
     });
 
-    // Hàm phân giải ID: Nếu ID không tồn tại trong map, thử tìm theo Label
     const resolve = (ref: string) => {
         if (!ref) return ref;
         if (idMap[ref]) return ref; 
@@ -274,7 +215,6 @@ function resolveGeometryReferences(geometry: any) {
                     }
                 }
             });
-            // Lọc bỏ các đối tượng tham chiếu đến ID không tồn tại (tránh crash)
             geometry[key] = geometry[key].filter((item: any) => {
                 for (const prop in item) {
                     if (prop.endsWith('Id') && typeof item[prop] === 'string') {
@@ -287,58 +227,44 @@ function resolveGeometryReferences(geometry: any) {
     });
 }
 
+// --- CẦU NỐI COMMUNICATION (BRIDGE) ---
 export const parseGeometryProblem = async (
   text: string,
   base64Image?: string,
   mimeType: string = "image/jpeg"
 ): Promise<AIResponse> => {
   
-  const parts: any[] = [];
-  if (base64Image) {
-    parts.push({ inlineData: { mimeType, data: base64Image } });
-  }
-  
-  // Prompt Runtime
-  const promptText = `
-    Đề bài: "${text}"
-    YÊU CẦU THỰC THI:
-    1. Phân tích hình học: Xác định các điểm, đường, mối quan hệ (vuông góc, song song, bằng nhau).
-    2. Tính toán tọa độ: Đặt hệ trục tọa độ ảo, tính toán (x,y) sao cho đúng tỷ lệ hình học.
-    3. Output JSON: Chỉ trả về JSON, không Markdown.
-  `;
-  parts.push({ text: promptText });
-
   return new Promise((resolve, reject) => {
+      // 1. Tạo Request ID để khớp phản hồi
       const requestId = Date.now().toString();
-      const TIMEOUT = 60000; 
+      const TIMEOUT = 90000; // 90 giây cho an toàn
 
       const cleanup = () => {
           window.removeEventListener('message', handleMessage);
           clearTimeout(timeoutId);
       };
 
+      // 2. Lắng nghe phản hồi từ "Da" (AI Studio)
       const handleMessage = (event: MessageEvent) => {
-          if (!event.data || typeof event.data !== 'object') return;
-
-          if (event.data.type === 'GEMINI_RESULT' && event.data.requestId === requestId) {
+          // Kiểm tra đúng loại message và ID
+          if (event.data?.type === 'GEMINI_RESULT' && event.data?.requestId === requestId) {
               cleanup();
               try {
-                  const payload = event.data.payload;
-                  let rawText = typeof payload === 'string' ? payload : 
-                                (payload.candidates?.[0]?.content?.parts?.[0]?.text || JSON.stringify(payload));
-
+                  const rawText = event.data.text;
                   const result = cleanAndParseJSON(rawText);
-                  if (!result) throw new Error("Không tìm thấy JSON hợp lệ trong phản hồi AI.");
                   
+                  if (!result) throw new Error("AI trả về dữ liệu không đúng định dạng JSON.");
+                  
+                  // Chạy Hậu Xử Lý tại Vercel (Hồn)
                   normalizeAndResolve(result, text, resolve);
 
               } catch (error: any) {
-                  console.error("AI Processing Error:", error);
+                  console.error("Processing Error:", error);
                   reject(new Error("Lỗi xử lý dữ liệu từ AI: " + error.message));
               }
           }
 
-          if (event.data.type === 'GEMINI_ERROR' && event.data.requestId === requestId) {
+          if (event.data?.type === 'GEMINI_ERROR' && event.data?.requestId === requestId) {
               cleanup();
               reject(new Error(event.data.error || "Lỗi kết nối đến Gemini AI."));
           }
@@ -347,22 +273,31 @@ export const parseGeometryProblem = async (
       window.addEventListener('message', handleMessage);
       const timeoutId = setTimeout(() => {
           cleanup();
-          reject(new Error("Hết thời gian chờ AI (Timeout 60s)."));
+          reject(new Error("Hết thời gian chờ AI Studio phản hồi (Timeout)."));
       }, TIMEOUT);
 
-      // Gửi yêu cầu ra main thread (nơi chứa API Key thực)
+      // 3. Gửi lệnh "Vẽ đi" lên AI Studio (Parent Window)
+      // Chúng ta gửi kèm SYSTEM_INSTRUCTION để đảm bảo AI Studio dù không có code logic 
+      // vẫn biết phải cấu hình model như thế nào.
+      
+      const payload = {
+          text: text,
+          image: base64Image ? { data: base64Image, mimeType: mimeType } : null,
+          systemInstruction: SYSTEM_INSTRUCTION // Gửi kèm não bộ sang
+      };
+
+      // Kiểm tra xem có đang chạy trong Iframe không
+      if (window.parent === window) {
+          // Nếu chạy trực tiếp (dev mode) không qua iframe, báo lỗi hoặc dùng mock
+          console.warn("Đang chạy chế độ Standalone (không có AI Studio Parent).");
+          // reject(new Error("Vui lòng chạy ứng dụng này bên trong Google AI Studio để sử dụng API miễn phí."));
+          // Tuy nhiên, để bạn test local, ta có thể uncomment dòng trên.
+      }
+
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
-          payload: {
-              model: 'gemini-3-pro-preview', 
-              contents: [{ parts: parts }],
-              config: {
-                  systemInstruction: SYSTEM_INSTRUCTION,
-                  responseMimeType: "application/json",
-                  temperature: 0.2 // Giảm độ sáng tạo để tăng độ chính xác toán học
-              }
-          }
+          payload
       }, '*');
   });
 };
@@ -375,7 +310,6 @@ function normalizeAndResolve(result: any, originalText: string, resolve: (value:
     
     const g = result.geometry;
     
-    // Đảm bảo ID duy nhất nếu AI quên
     ['points', 'segments', 'circles', 'texts', 'angles', 'cylinders', 'cones', 'spheres'].forEach(key => {
         if (!g[key]) g[key] = [];
         g[key].forEach((item: any, idx: number) => {
@@ -383,16 +317,9 @@ function normalizeAndResolve(result: any, originalText: string, resolve: (value:
         });
     });
 
-    // BƯỚC 1: Xử lý tham chiếu ID (Labels -> IDs)
     resolveGeometryReferences(g);
-
-    // BƯỚC 2: Scale và Center hình (Tránh hình quá bé hoặc lệch)
     fixAndScaleGeometry(g);
-
-    // BƯỚC 3: Phân tích ngữ nghĩa văn bản để bổ sung (Góc vuông, nối điểm thiếu)
     enhanceGeometryWithTextAnalysis(g, originalText);
-
-    // BƯỚC 4: Resolve lại lần nữa cho các đối tượng mới thêm ở bước 3
     resolveGeometryReferences(g);
     
     resolve(result);
