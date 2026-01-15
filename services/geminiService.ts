@@ -37,7 +37,9 @@ function cleanAndParseJSON(text: string): any {
     }
 }
 
-function removeVietnameseTones(str: string): string {
+// Xử lý text thô để regex hoạt động tốt nhất
+function normalizeTextForHeuristic(str: string): string {
+    // 1. Xóa dấu tiếng Việt
     str = str.replace(/à|á|ạ|ả|ã|â|ầ|ấ|ậ|ẩ|ẫ|ă|ằ|ắ|ặ|ẳ|ẵ/g, "a");
     str = str.replace(/è|é|ẹ|ẻ|ẽ|ê|ề|ế|ệ|ể|ễ/g, "e");
     str = str.replace(/ì|í|ị|ỉ|ĩ/g, "i");
@@ -52,23 +54,23 @@ function removeVietnameseTones(str: string): string {
     str = str.replace(/Ù|Ú|Ụ|Ủ|Ũ|Ư|Ừ|Ứ|Ự|Ử|Ữ/g, "U");
     str = str.replace(/Ỳ|Ý|Ỵ|Ỷ|Ỹ/g, "Y");
     str = str.replace(/Đ/g, "D");
-    return str.toUpperCase();
+    
+    // 2. Chuyển về chữ hoa và xóa ký tự đặc biệt thừa
+    return str.toUpperCase().replace(/[^A-Z0-9\s\(\)]/g, " ");
 }
 
-// --- BỘ NÃO PHÂN TÍCH VĂN BẢN (HEURISTIC ENGINE) ---
+// --- HEURISTIC ENGINE (Bộ não phụ - Phiên bản Aggressive) ---
 function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
     if (!geometry.points) return;
     
-    const text = removeVietnameseTones(problemText); 
+    const text = normalizeTextForHeuristic(problemText); 
     const points = geometry.points as any[];
     
     // 1. AUTO-LABELING (Quan trọng: Gán nhãn nếu AI quên)
-    // Nếu điểm chưa có label, gán A, B, C... để heuristic có thể hoạt động
     let labelIndex = 0;
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     points.forEach(p => {
         if (!p.label || p.label.trim() === "") {
-            // Tìm label chưa dùng
             while (points.some(existing => existing.label === alphabet[labelIndex])) {
                 labelIndex = (labelIndex + 1) % alphabet.length;
             }
@@ -82,10 +84,12 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         if (p.label) labelMap[p.label.toUpperCase()] = p.id;
     });
 
-    const ensureSegment = (id1: string, id2: string, style: string = 'solid') => {
+    // Helper: Nối 2 điểm an toàn
+    const ensureSegment = (id1: string, id2: string) => {
         if (!id1 || !id2 || id1 === id2) return;
         if (!geometry.segments) geometry.segments = [];
         
+        // Kiểm tra trùng lặp
         const exists = geometry.segments.some((s: any) => 
             (s.startPointId === id1 && s.endPointId === id2) || 
             (s.startPointId === id2 && s.endPointId === id1)
@@ -96,14 +100,15 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
                 id: generateId('s_auto'),
                 startPointId: id1,
                 endPointId: id2,
-                style: style,
+                style: 'solid',
                 color: 'black',
                 strokeWidth: 1.5
             });
         }
     };
 
-    // --- A. TỰ ĐỘNG VẼ ĐƯỜNG TRÒN ---
+    // --- A. TỰ ĐỘNG VẼ ĐƯỜNG TRÒN (Logic thông minh) ---
+    // Quét: "DUONG TRON (O)" hoặc "TAM O"
     const circleRegex = /(?:DUONG TRON|D\.TRON)\s*\(?([A-Z])\)?|TAM\s+([A-Z])|\(([A-Z])\)/g;
     let cMatch;
     const centersProcessed = new Set<string>();
@@ -118,8 +123,8 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
             
             const hasCircle = geometry.circles.some((c: any) => c.centerId === centerId);
             if (!hasCircle) {
-                // Tìm bán kính hợp lý
-                let radius = 120; 
+                // Heuristic tìm bán kính: Tìm điểm xa nhất có vẻ liên quan
+                let radius = 120; // Mặc định
                 let radiusPointId = undefined;
                 const centerPt = points.find(p => p.id === centerId);
                 
@@ -133,10 +138,11 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
                             }
                         }
                     });
-                    // Ưu tiên điểm có khoảng cách xuất hiện nhiều lần (bán kính)
-                    // Hoặc điểm xa nhất trong phạm vi hợp lý
+                    
                     if (candidates.length > 0) {
-                        candidates.sort((a,b) => b.dist - a.dist); // Xa nhất trước
+                        // Ưu tiên điểm xuất hiện trong văn bản gần chữ "Đường tròn" hoặc "Bán kính"
+                        // Nếu không, lấy điểm xa nhất để bao quát hình
+                        candidates.sort((a,b) => b.dist - a.dist); 
                         radiusPointId = candidates[0].id;
                         radius = candidates[0].dist;
                     }
@@ -154,25 +160,30 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
         }
     }
 
-    // --- B. QUÉT MẠNH MẼ CÁC CẶP ĐIỂM (AB, A và B, A đến B) ---
-    // Pattern 1: AB, OM (Dính liền)
-    const pairRegex = /\b([A-Z])([A-Z])\b/g;
+    // --- B. QUÉT MẠNH MẼ CÁC CẶP ĐIỂM (THE "OLD FILE" MAGIC) ---
+    // Chiến thuật: Bất kỳ khi nào thấy 2 chữ cái in hoa đi liền nhau (ví dụ "AB", "OM", "MA")
+    // Hoặc cách nhau bởi dấu cách/dấu bằng, hãy nối chúng lại.
+    // Đây là cách xử lý "OM=3R", "tiếp tuyến MA", "vuông góc MO"
+    
+    // Pattern 1: Dính liền (AB, OM, MA...)
+    const pairRegex = /([A-Z])([A-Z])/g;
     let pMatch;
+    // Reset regex index just in case
+    pairRegex.lastIndex = 0;
+    
     while ((pMatch = pairRegex.exec(text)) !== null) {
-        const p1 = labelMap[pMatch[1]];
-        const p2 = labelMap[pMatch[2]];
-        if (p1 && p2) ensureSegment(p1, p2);
+        const l1 = pMatch[1];
+        const l2 = pMatch[2];
+        const p1 = labelMap[l1];
+        const p2 = labelMap[l2];
+        
+        // Chỉ nối nếu cả 2 điểm thực sự tồn tại trong danh sách Points
+        if (p1 && p2) {
+            ensureSegment(p1, p2);
+        }
     }
 
-    // Pattern 2: A, B hoặc A va B
-    const loosePairRegex = /\b([A-Z])\s*(?:VA|AND|,|-|TO)\s*([A-Z])\b/g;
-    while ((pMatch = loosePairRegex.exec(text)) !== null) {
-        const p1 = labelMap[pMatch[1]];
-        const p2 = labelMap[pMatch[2]];
-        if (p1 && p2) ensureSegment(p1, p2);
-    }
-
-    // --- C. XỬ LÝ ĐA GIÁC ---
+    // --- C. XỬ LÝ ĐA GIÁC (TAM GIAC ABC...) ---
     const polyRegex = /(?:TAM GIAC|TU GIAC|HINH CHU NHAT|HINH VUONG)\s+([A-Z\s]+)/g;
     let polyMatch;
     while ((polyMatch = polyRegex.exec(text)) !== null) {
@@ -190,28 +201,20 @@ function enhanceGeometryWithTextAnalysis(geometry: any, problemText: string) {
     }
 
     // --- D. SAFETY NET (LƯỚI AN TOÀN CUỐI CÙNG) ---
-    // Nếu sau tất cả mà KHÔNG CÓ đoạn thẳng nào, nối đại các điểm thành vòng tròn
-    // Điều này đảm bảo hình không bị trống trơn
+    // Nếu sau tất cả mà KHÔNG CÓ đoạn thẳng nào, nối tuần tự A->B->C->...->A
+    // Đây là logic của file cũ mà bạn thích
     const segmentCount = geometry.segments ? geometry.segments.length : 0;
     if (segmentCount === 0 && points.length >= 2) {
-        // Sắp xếp điểm theo góc để tạo đa giác không tự cắt (convex hull đơn giản)
-        // Lấy tâm trung bình
-        const cx = points.reduce((s,p) => s + p.x, 0) / points.length;
-        const cy = points.reduce((s,p) => s + p.y, 0) / points.length;
-        
-        // Sort
-        const sortedPoints = [...points].sort((a, b) => {
-            const angA = Math.atan2(a.y - cy, a.x - cx);
-            const angB = Math.atan2(b.y - cy, b.x - cx);
-            return angA - angB;
-        });
-
-        for (let i = 0; i < sortedPoints.length; i++) {
-            const p1 = sortedPoints[i];
-            const p2 = sortedPoints[(i + 1) % sortedPoints.length];
-            // Chỉ nối nếu là chuỗi kín hoặc số điểm ít
-            if (points.length <= 5 || i < points.length - 1) {
-                 ensureSegment(p1.id, p2.id);
+        // Sắp xếp điểm theo thứ tự xuất hiện trong mảng (thường là thứ tự AI tạo ra)
+        // Thay vì sort theo tọa độ (gây rối), ta nối theo index
+        for (let i = 0; i < points.length; i++) {
+            const p1 = points[i];
+            // Nếu có ít điểm (<6), nối vòng tròn. Nếu nhiều điểm, nối hở để tránh rối.
+            if (i < points.length - 1) {
+                 ensureSegment(p1.id, points[i+1].id);
+            } else if (points.length <= 5) {
+                 // Đóng vòng cho ít điểm
+                 ensureSegment(p1.id, points[0].id);
             }
         }
     }
@@ -300,7 +303,7 @@ function normalizeAndResolve(result: any, originalText: string, resolvePromise: 
 
     resolveGeometryReferences(g);
     
-    // HEURISTIC ENGINE: Fill in the gaps
+    // HEURISTIC ENGINE: Fill in the gaps (The MAGIC part)
     enhanceGeometryWithTextAnalysis(g, originalText);
     
     resolveGeometryReferences(g);
@@ -324,7 +327,7 @@ export const parseGeometryProblem = async (
     Đề bài: "${text}"
     YÊU CẦU:
     1. Points: Tọa độ hợp lý (Tâm 500,400).
-    2. Segments: Nối các điểm.
+    2. Segments: Nối các điểm tương ứng.
     3. Circles: Nếu có đường tròn, trả về "circles".
     4. Explanation: Giải thích.
     Trả về JSON.
