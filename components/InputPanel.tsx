@@ -186,13 +186,12 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
       }
       const response = await parseGeometryProblem(prompt, base64Data, mimeType);
       
-      // --- CENTERING LOGIC ---
-      // Tự động căn giữa hình vẽ vào gốc tọa độ (0,0) của canvas
-      // Do canvas có pan mặc định là chính giữa màn hình, nên (0,0) chính là tâm nhìn.
       const geom = response.geometry;
       
-      // Safety Check: Đảm bảo geom và points tồn tại trước khi truy cập
+      // KIỂM TRA QUAN TRỌNG: Nếu không có điểm nào, coi như thất bại
       if (geom && geom.points && geom.points.length > 0) {
+          
+          // --- CENTERING LOGIC ---
           let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
           geom.points.forEach(p => {
               if (p.x < minX) minX = p.x;
@@ -204,7 +203,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
           if (minX !== Infinity) {
               const centerX = (minX + maxX) / 2;
               const centerY = (minY + maxY) / 2;
-              
               // Dịch chuyển toàn bộ điểm về gốc (0,0)
               geom.points.forEach(p => { p.x -= centerX; p.y -= centerY; });
               geom.texts.forEach(t => { t.x -= centerX; t.y -= centerY; });
@@ -214,15 +212,19 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
                   if(g.labelY !== undefined) g.labelY -= centerY; 
               });
           }
-      }
-      // -----------------------
+          // -----------------------
 
-      // Chỉ cập nhật nếu geometry hợp lệ
-      if (geom) {
           setGeometryData(geom);
+          setExplanation(response.explanation || "Đã hoàn tất dựng hình.");
+      } else {
+          // Trường hợp AI trả lời nhưng không có hình
+          if (response.explanation) {
+              setExplanation(response.explanation + "\n\n(Lưu ý: AI không tìm thấy đối tượng hình học nào để vẽ)");
+          } else {
+              setError("AI không thể nhận diện bài toán hoặc không tạo ra hình vẽ nào.");
+          }
       }
       
-      setExplanation(response.explanation || "Đã hoàn tất dựng hình.");
     } catch (err: any) {
       setError(err.message || "Lỗi xử lý logic.");
     } finally {
@@ -233,7 +235,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
   if (!isOpen) return null;
 
   return (
-    // Added onPaste handler to container and tabIndex for focus
     <div 
         ref={panelRef}
         className={`
@@ -249,7 +250,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
           <Calculator className="text-indigo-600" size={20} />
           Vẽ hình học bằng Ai
         </h2>
-        {/* Close Button for Mobile/Tablet */}
         <button 
             onClick={onClose} 
             className="lg:hidden p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-all"
@@ -288,7 +288,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
             onDrop={handleDrop}
           >
              
-             {/* CAMERA VIEW */}
              <div className={`${showCamera ? 'block' : 'hidden'} relative w-full aspect-video bg-black`}>
                  <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
                  <canvas ref={canvasRef} className="hidden" />
@@ -302,19 +301,15 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
                  </div>
              </div>
 
-             {/* PREVIEW OR UPLOAD UI */}
              {!showCamera && (
                  selectedImage ? (
                     <div className="relative w-full h-48 flex items-center justify-center bg-slate-50/50 p-3 group">
-                        {/* Background subtle pattern */}
                         <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:8px_8px] pointer-events-none"></div>
-
                         <img 
                           src={selectedImage} 
                           alt="Preview" 
                           className="relative z-10 max-h-full max-w-full object-contain rounded-lg shadow-sm border border-slate-200 bg-white" 
                         />
-                        
                         <button 
                             onClick={(e) => { e.stopPropagation(); setSelectedImage(null); }} 
                             className="absolute top-2 right-2 p-1.5 bg-white text-slate-500 rounded-full shadow-md hover:bg-red-50 hover:text-red-500 z-20 border border-slate-100 transition-all opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0"
@@ -333,7 +328,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
                                 <ImageIcon className="text-slate-400 group-hover:text-indigo-500" size={24} />
                                 <span className="text-[10px] font-bold text-slate-500 group-hover:text-indigo-600 uppercase">Chọn ảnh</span>
                             </button>
-                            
                             <button 
                                 onClick={startCamera}
                                 className="flex-1 flex flex-col items-center gap-2 p-3 rounded-xl bg-white border border-slate-200 hover:bg-indigo-50 hover:border-indigo-200 transition-all group shadow-sm"
@@ -348,7 +342,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
                     </div>
                 )
              )}
-             
              <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
           </div>
         </div>
