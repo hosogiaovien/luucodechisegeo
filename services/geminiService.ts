@@ -14,14 +14,22 @@ const SYSTEM_INSTRUCTION = `
 Bạn là "GeoSmart Expert" - Chuyên gia hình học.
 Nhiệm vụ: Phân tích đề bài và sinh dữ liệu JSON để vẽ lên canvas SVG (1000x800).
 
---- QUY TẮC VẼ HÌNH (QUAN TRỌNG NHẤT) ---
-1. **QUY MÔ TỌA ĐỘ (SCALE)**: 
+--- QUY TẮC SỐNG CÒN (BẮT BUỘC TUÂN THỦ) ---
+1. **KHÔNG ĐƯỢC BỎ QUÊN ĐƯỜNG NỐI (SEGMENTS) - QUAN TRỌNG NHẤT**:
+   - Một hình vẽ KHÔNG THỂ chỉ có các điểm chấm (Points).
+   - Bắt buộc phải khai báo mảng "segments" nối các điểm đó lại theo đề bài.
+   - Ví dụ: Đề cho "Tam giác ABC có đường cao AH".
+     -> Points: [A, B, C, H]
+     -> Segments: [AB, BC, CA, AH] (Phải liệt kê đủ!)
+   - Ví dụ: "Tứ giác ABCD"
+     -> Segments: [AB, BC, CD, DA]
+   - Nếu có giao điểm O của hai đường chéo AC và BD -> Phải có segments AC và BD.
+
+2. **QUY MÔ TỌA ĐỘ (SCALE)**: 
    - KHÔNG dùng tọa độ nhỏ (ví dụ 1, 2, 3). HÃY DÙNG TỌA ĐỘ PIXEL LỚN.
    - Ví dụ: Thay vì A(0, 3), hãy dùng A(500, 300).
-   - Khoảng cách giữa các điểm chính nên từ 200 đến 400 đơn vị.
-2. **NỐI ĐIỂM (CONNECTIVITY)**:
-   - Nếu tạo điểm A, B, C -> BẮT BUỘC tạo segments nối chúng (AB, BC, CA).
-   - Đừng để điểm nằm trơ trọi.
+   - Hình vẽ phải chiếm khoảng 60-80% khung hình 1000x800.
+
 3. **BỐ CỤC**:
    - Trung tâm hình vẽ nên ở (500, 400).
    - Trục Y trong SVG hướng xuống dưới.
@@ -169,13 +177,13 @@ function scaleAndCenterGeometry(geometry: any) {
 
     // 2. Determine Scale Factor
     // Target size is roughly 400px (half screen).
-    // If the shape is tiny (e.g., width < 50), it means AI used small math coords.
-    // If shape is already large, scale might be near 1.
     const targetSize = 400;
     const currentMaxSize = Math.max(width, height);
     
     let scale = 1;
-    if (currentMaxSize < 300) {
+    // Scale up if tiny (e.g. math coords), scale down if huge (unlikely but safe)
+    // Only apply scale if it deviates significantly from target
+    if (currentMaxSize < 300 || currentMaxSize > 1200) {
         scale = targetSize / currentMaxSize;
     }
 
@@ -220,8 +228,6 @@ function scaleAndCenterGeometry(geometry: any) {
 
     if (geometry.texts) {
         geometry.texts.forEach((t: any) => {
-            // Text positions often come from AI, assume they need same transform
-            // If they were originally near points, scale/translate keeps them relative
             if (t.x !== undefined && t.y !== undefined) {
                 t.x = t.x * scale + dx;
                 t.y = t.y * scale + dy;
@@ -255,10 +261,11 @@ export const parseGeometryProblem = async (
     [GEOMETRY REQUEST]
     Đề bài: "${text}"
     
-    Yêu cầu:
-    1. Tính toán tọa độ (Canvas 1000x800).
-    2. NỐI CÁC ĐIỂM (Segments). Đừng để điểm rời rạc.
-    3. Trả về JSON.
+    YÊU CẦU QUAN TRỌNG:
+    1. Tính toán tọa độ (dùng hệ 1000x800).
+    2. **TẠO SEGMENTS (ĐƯỜNG NỐI)**: Hãy chắc chắn bạn đã tạo danh sách 'segments' nối các điểm lại với nhau. Đừng để các điểm nằm rời rạc.
+       - Ví dụ: Có A, B, C thì phải có segments nối AB, BC, CA.
+    3. Trả về JSON đúng cấu trúc.
   `;
   
   parts.push({ text: promptText });
