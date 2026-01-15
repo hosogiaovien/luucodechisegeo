@@ -11,18 +11,28 @@ const Type = {
 };
 
 const SYSTEM_INSTRUCTION = `
-Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D) cấp Olympiad.
-Nhiệm vụ: Phân tích đề bài, giải toán và sinh dữ liệu JSON để vẽ lên canvas SVG (1000x800).
+Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D).
+Nhiệm vụ: Phân tích đề bài và sinh dữ liệu JSON để vẽ lên canvas SVG (1000x800).
 
---- QUY TẮC DỰNG HÌNH & TỌA ĐỘ (BẮT BUỘC) ---
-1. TỌA ĐỘ VÀ BỐ CỤC:
-   - Trung tâm canvas là (500, 400).
-   - Tam giác/Đa giác: Nên đặt trọng tâm gần (500, 450). Cạnh đáy nên nằm ngang.
-   - Hình không gian: Đặt đáy ở khoảng y=600, đỉnh ở y=200.
-2. QUY TẮC 3D:
-   - Các cạnh bị khuất PHẢI có thuộc tính "style": "dashed".
-3. TRẢ VỀ JSON:
-   - Chỉ trả về JSON thuần túy, KHÔNG được bọc trong markdown block (ví dụ: không dùng \`\`\`json).
+--- QUY TẮC VẼ HÌNH (QUAN TRỌNG NHẤT) ---
+1. **KHÔNG ĐƯỢC ĐỂ ĐIỂM RỜI RẠC (CRITICAL)**:
+   - Nếu bạn tạo ra các điểm (Points), bạn BẮT BUỘC phải tạo các đoạn thẳng (Segments) nối chúng lại theo ngữ cảnh.
+   - Ví dụ: Đề bài "Tam giác ABC" -> Phải có điểm A, B, C VÀ các đoạn thẳng nối AB, BC, CA.
+   - Ví dụ: "Đường cao AH" -> Phải có đoạn thẳng nối A và H.
+   - Ví dụ: "Tứ giác ABCD" -> Phải nối A-B, B-C, C-D, D-A.
+2. **TỌA ĐỘ VÀ BỐ CỤC**:
+   - Canvas 1000x800. Đặt hình vẽ ở trung tâm (khoảng 500, 400).
+   - Hình vẽ phải lớn, rõ ràng (chiếm khoảng 50-70% diện tích).
+   - Tránh để các điểm quá gần nhau hoặc trùng nhau.
+3. **ĐỐI TƯỢNG HÌNH HỌC**:
+   - Đường tròn: Phải có tâm và bán kính rõ ràng.
+   - Góc vuông: Nếu có (ví dụ AH vuông góc BC), hãy thêm vào mảng "angles" với isRightAngle: true.
+4. **HÌNH KHÔNG GIAN (3D)**:
+   - Các cạnh bị khuất (nét đứt) PHẢI có thuộc tính "style": "dashed".
+   - Các cạnh nhìn thấy: "style": "solid".
+
+--- OUTPUT FORMAT ---
+Chỉ trả về JSON thuần túy. KHÔNG dùng Markdown block (như \`\`\`json).
 `;
 
 const RESPONSE_SCHEMA = {
@@ -53,8 +63,9 @@ const RESPONSE_SCHEMA = {
               id: { type: Type.STRING },
               startPointId: { type: Type.STRING },
               endPointId: { type: Type.STRING },
-              style: { type: Type.STRING },
-              color: { type: Type.STRING }
+              style: { type: Type.STRING }, // 'solid' | 'dashed' | 'dotted'
+              color: { type: Type.STRING },
+              label: { type: Type.STRING } // Optional label for segment
             },
             required: ["id", "startPointId", "endPointId", "style"]
           }
@@ -67,11 +78,12 @@ const RESPONSE_SCHEMA = {
             properties: {
               id: { type: Type.STRING },
               centerId: { type: Type.STRING },
-              radiusValue: { type: Type.NUMBER },
+              radiusValue: { type: Type.NUMBER }, // Pixel value
+              radiusPointId: { type: Type.STRING }, // Or define radius by a point on circle
               color: { type: Type.STRING },
               style: { type: Type.STRING }
             },
-            required: ["id", "centerId", "radiusValue"]
+            required: ["id", "centerId"]
           }
         },
         ellipses: {
@@ -116,16 +128,15 @@ const RESPONSE_SCHEMA = {
 };
 
 // --- AGGRESSIVE JSON CLEANER ---
-// Hàm này chịu trách nhiệm "dọn rác" trong chuỗi trả về từ AI
 function cleanAndParseJSON(text: string): any {
     if (!text || typeof text !== 'string') return null;
     
     let clean = text;
 
-    // 1. Loại bỏ Markdown Code Blocks (```json ... ``` hoặc ``` ... ```)
+    // 1. Remove Markdown
     clean = clean.replace(/```json/gi, "").replace(/```/g, "");
 
-    // 2. Tìm khối JSON hợp lệ đầu tiên và cuối cùng (để loại bỏ lời dẫn chuyện ở đầu/cuối)
+    // 2. Find JSON bounds
     const firstOpen = clean.indexOf('{');
     const lastClose = clean.lastIndexOf('}');
     
@@ -133,8 +144,7 @@ function cleanAndParseJSON(text: string): any {
         clean = clean.substring(firstOpen, lastClose + 1);
     }
 
-    // 3. Xóa các dòng comment // (AI đôi khi quen tay thêm vào dù là JSON)
-    // Lưu ý: Regex này an toàn cho JSON hình học, nhưng cẩn thận nếu URL có chứa //
+    // 3. Remove Comments (// ...)
     clean = clean.replace(/^\s*\/\/.*$/gm, "");
 
     try {
@@ -161,19 +171,21 @@ export const parseGeometryProblem = async (
   }
   
   const promptText = `
-    [GEOMETRY SOLVER REQUEST]
+    [GEOMETRY REQUEST]
     Đề bài: "${text}"
-    Yêu cầu:
-    1. Phân tích đề bài.
-    2. Tính toán tọa độ (Canvas 1000x800).
-    3. Trả về JSON đúng cấu trúc đã định nghĩa.
+    
+    Yêu cầu quan trọng:
+    1. Tính toán tọa độ chính xác.
+    2. NỐI CÁC ĐIỂM LẠI VỚI NHAU. Đừng để các điểm nằm rời rạc.
+       - Nếu có A, B, C -> Hãy tạo segments nối A-B, B-C, C-A.
+       - Nếu có đường tròn (O) -> Hãy tạo circle.
+    3. Trả về JSON đúng cấu trúc.
   `;
   
   parts.push({ text: promptText });
 
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      // Tăng timeout lên 3 phút để AI có thời gian suy nghĩ
       const TIMEOUT = 180000; 
 
       const cleanup = () => {
@@ -182,7 +194,6 @@ export const parseGeometryProblem = async (
       };
 
       const handleMessage = (event: MessageEvent) => {
-          // Lọc tin nhắn rác, chỉ nhận object
           if (!event.data || typeof event.data !== 'object') return;
 
           if (event.data.type === 'GEMINI_RESULT' && event.data.requestId === requestId) {
@@ -192,27 +203,19 @@ export const parseGeometryProblem = async (
                   const payload = event.data.payload;
                   let rawText = '';
 
-                  // --- XỬ LÝ PAYLOAD ĐA DẠNG TỪ BRIDGE ---
                   if (typeof payload === 'string') {
                       rawText = payload;
                   } else if (payload && typeof payload === 'object') {
-                      // Trường hợp trả về cấu trúc API chuẩn của Google (candidates -> content -> parts)
                       if (payload.candidates && payload.candidates[0]?.content?.parts?.[0]?.text) {
                           rawText = payload.candidates[0].content.parts[0].text;
-                      } 
-                      // Trường hợp payload chính là JSON kết quả (đã được parse bởi middleware bên ngoài)
-                      else if (payload.geometry) {
-                          // Đã là object mong muốn, dùng luôn
+                      } else if (payload.geometry) {
                           normalizeAndResolve(payload, resolve);
                           return;
-                      }
-                      // Fallback: stringify cả cục để regex tìm JSON
-                      else {
+                      } else {
                           rawText = JSON.stringify(payload);
                       }
                   }
 
-                  // Parse và làm sạch chuỗi
                   const result = cleanAndParseJSON(rawText);
 
                   if (!result) {
@@ -223,7 +226,7 @@ export const parseGeometryProblem = async (
 
               } catch (error: any) {
                   console.error("Lỗi xử lý kết quả từ AI:", error);
-                  reject(new Error("Dữ liệu trả về bị lỗi hoặc không đúng định dạng."));
+                  reject(new Error("Dữ liệu trả về bị lỗi."));
               }
           }
 
@@ -237,20 +240,18 @@ export const parseGeometryProblem = async (
 
       const timeoutId = setTimeout(() => {
           cleanup();
-          reject(new Error("Hết thời gian chờ (180s). Vui lòng thử lại."));
+          reject(new Error("Hết thời gian chờ."));
       }, TIMEOUT);
 
-      // --- GỬI POST MESSAGE (CẦU NỐI) ---
-      // Gửi đi cấu hình mạnh nhất để đảm bảo kết quả tốt nhất
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
           payload: {
-              model: 'gemini-3-pro-preview', // Sử dụng model xịn
+              model: 'gemini-3-pro-preview', 
               contents: [{ parts: parts }],
               config: {
                   systemInstruction: SYSTEM_INSTRUCTION,
-                  thinkingConfig: { thinkingBudget: 8192 }, // Bật chế độ suy nghĩ sâu
+                  thinkingConfig: { thinkingBudget: 8192 },
                   responseMimeType: "application/json",
                   responseSchema: RESPONSE_SCHEMA,
               }
@@ -259,14 +260,11 @@ export const parseGeometryProblem = async (
   });
 };
 
-// Hàm phụ trợ: Chuẩn hóa dữ liệu trước khi trả về App
 function normalizeAndResolve(result: any, resolve: (value: AIResponse | PromiseLike<AIResponse>) => void) {
-    // Nếu AI trả về thẳng object geometry mà không bọc trong root
     if (!result.geometry && result.points) {
         result = { geometry: result, explanation: "Đã tạo hình vẽ." };
     }
     
-    // Đảm bảo cấu trúc Geometry luôn tồn tại và đủ mảng
     if (!result.geometry) {
         result.geometry = { points: [], segments: [], circles: [], ellipses: [], angles: [], texts: [], lines: [] };
     }
