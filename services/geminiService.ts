@@ -187,7 +187,7 @@ export const parseGeometryProblem = async (
                   
                   result = JSON.parse(jsonString);
                   
-                  // Helper đảm bảo mảng tồn tại (Logic gốc từ file bạn cung cấp)
+                  // Helper đảm bảo mảng tồn tại
                   const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
                   if (result.geometry) {
                       ensureArray(result.geometry, 'points');
@@ -221,16 +221,18 @@ export const parseGeometryProblem = async (
       }, TIMEOUT);
 
       // --- GỬI POST MESSAGE ---
-      // Quan trọng: Gửi đúng Model và Thinking Config như file gốc yêu cầu
+      // Quan trọng: 
+      // 1. Dùng gemini-3-pro-preview
+      // 2. contents phải là MẢNG các Content [{parts: [...]}] để API hiểu đúng ngữ cảnh.
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
           payload: {
               model: 'gemini-3-pro-preview', 
-              contents: { parts },
+              contents: [{ parts: parts }], // Cấu trúc chuẩn: Mảng Content chứa Parts
               config: {
                   systemInstruction: SYSTEM_INSTRUCTION,
-                  thinkingConfig: { thinkingBudget: 16000 }, // Cấu hình Thinking quan trọng
+                  thinkingConfig: { thinkingBudget: 16000 }, // Cấu hình Thinking
                   responseMimeType: "application/json",
                   responseSchema: RESPONSE_SCHEMA,
               }
