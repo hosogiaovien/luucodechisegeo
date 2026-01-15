@@ -1,0 +1,8 @@
+{
+  "name": "chuẩn bị cho share link Copy of 14:35 15/01/2026 OK mọi thứ cho khối 3D còn API GeoSmart",
+  "description": "Ứng dụng vẽ hình học thông minh tự động từ đề bài văn bản hoặc hình ảnh, hỗ trợ chỉnh sửa và ký hiệu chuẩn Sách Giáo Khoa.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
