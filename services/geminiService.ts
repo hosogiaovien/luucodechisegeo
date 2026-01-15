@@ -11,28 +11,23 @@ const Type = {
 };
 
 const SYSTEM_INSTRUCTION = `
-Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D).
+Bạn là "GeoSmart Expert" - Chuyên gia hình học.
 Nhiệm vụ: Phân tích đề bài và sinh dữ liệu JSON để vẽ lên canvas SVG (1000x800).
 
 --- QUY TẮC VẼ HÌNH (QUAN TRỌNG NHẤT) ---
-1. **KHÔNG ĐƯỢC ĐỂ ĐIỂM RỜI RẠC (CRITICAL)**:
-   - Nếu bạn tạo ra các điểm (Points), bạn BẮT BUỘC phải tạo các đoạn thẳng (Segments) nối chúng lại theo ngữ cảnh.
-   - Ví dụ: Đề bài "Tam giác ABC" -> Phải có điểm A, B, C VÀ các đoạn thẳng nối AB, BC, CA.
-   - Ví dụ: "Đường cao AH" -> Phải có đoạn thẳng nối A và H.
-   - Ví dụ: "Tứ giác ABCD" -> Phải nối A-B, B-C, C-D, D-A.
-2. **TỌA ĐỘ VÀ BỐ CỤC**:
-   - Canvas 1000x800. Đặt hình vẽ ở trung tâm (khoảng 500, 400).
-   - Hình vẽ phải lớn, rõ ràng (chiếm khoảng 50-70% diện tích).
-   - Tránh để các điểm quá gần nhau hoặc trùng nhau.
-3. **ĐỐI TƯỢNG HÌNH HỌC**:
-   - Đường tròn: Phải có tâm và bán kính rõ ràng.
-   - Góc vuông: Nếu có (ví dụ AH vuông góc BC), hãy thêm vào mảng "angles" với isRightAngle: true.
-4. **HÌNH KHÔNG GIAN (3D)**:
-   - Các cạnh bị khuất (nét đứt) PHẢI có thuộc tính "style": "dashed".
-   - Các cạnh nhìn thấy: "style": "solid".
+1. **QUY MÔ TỌA ĐỘ (SCALE)**: 
+   - KHÔNG dùng tọa độ nhỏ (ví dụ 1, 2, 3). HÃY DÙNG TỌA ĐỘ PIXEL LỚN.
+   - Ví dụ: Thay vì A(0, 3), hãy dùng A(500, 300).
+   - Khoảng cách giữa các điểm chính nên từ 200 đến 400 đơn vị.
+2. **NỐI ĐIỂM (CONNECTIVITY)**:
+   - Nếu tạo điểm A, B, C -> BẮT BUỘC tạo segments nối chúng (AB, BC, CA).
+   - Đừng để điểm nằm trơ trọi.
+3. **BỐ CỤC**:
+   - Trung tâm hình vẽ nên ở (500, 400).
+   - Trục Y trong SVG hướng xuống dưới.
 
 --- OUTPUT FORMAT ---
-Chỉ trả về JSON thuần túy. KHÔNG dùng Markdown block (như \`\`\`json).
+Chỉ trả về JSON thuần túy. KHÔNG dùng Markdown block.
 `;
 
 const RESPONSE_SCHEMA = {
@@ -132,19 +127,14 @@ function cleanAndParseJSON(text: string): any {
     if (!text || typeof text !== 'string') return null;
     
     let clean = text;
-
-    // 1. Remove Markdown
     clean = clean.replace(/```json/gi, "").replace(/```/g, "");
-
-    // 2. Find JSON bounds
+    
     const firstOpen = clean.indexOf('{');
     const lastClose = clean.lastIndexOf('}');
     
     if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
         clean = clean.substring(firstOpen, lastClose + 1);
     }
-
-    // 3. Remove Comments (// ...)
     clean = clean.replace(/^\s*\/\/.*$/gm, "");
 
     try {
@@ -153,6 +143,97 @@ function cleanAndParseJSON(text: string): any {
         console.error("JSON Parse Error:", e);
         console.log("Failed Text:", clean);
         return null;
+    }
+}
+
+// --- AUTO SCALING & CENTERING ENGINE ---
+function scaleAndCenterGeometry(geometry: any) {
+    if (!geometry.points || geometry.points.length === 0) return;
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    
+    // 1. Calculate Bounds
+    geometry.points.forEach((p: any) => {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    });
+
+    let width = maxX - minX;
+    let height = maxY - minY;
+    
+    // Handle degenerate cases (single point)
+    if (width === 0) width = 1;
+    if (height === 0) height = 1;
+
+    // 2. Determine Scale Factor
+    // Target size is roughly 400px (half screen).
+    // If the shape is tiny (e.g., width < 50), it means AI used small math coords.
+    // If shape is already large, scale might be near 1.
+    const targetSize = 400;
+    const currentMaxSize = Math.max(width, height);
+    
+    let scale = 1;
+    if (currentMaxSize < 300) {
+        scale = targetSize / currentMaxSize;
+    }
+
+    // 3. Apply Scaling (relative to origin 0,0 temporarily)
+    if (scale !== 1) {
+        geometry.points.forEach((p: any) => {
+            p.x *= scale;
+            p.y *= scale;
+        });
+        if (geometry.circles) {
+            geometry.circles.forEach((c: any) => {
+                if (c.radiusValue) c.radiusValue *= scale;
+            });
+        }
+        if (geometry.ellipses) {
+            geometry.ellipses.forEach((e: any) => {
+                if (e.rx) e.rx *= scale;
+                if (e.ry) e.ry *= scale;
+                if (e.cx) e.cx *= scale; // Will be recentered later
+                if (e.cy) e.cy *= scale;
+            });
+        }
+        // Recalculate bounds after scaling
+        minX *= scale; maxX *= scale;
+        minY *= scale; maxY *= scale;
+    }
+
+    // 4. Centering
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    
+    const TARGET_CENTER_X = 500;
+    const TARGET_CENTER_Y = 400;
+    
+    const dx = TARGET_CENTER_X - centerX;
+    const dy = TARGET_CENTER_Y - centerY;
+
+    geometry.points.forEach((p: any) => {
+        p.x += dx;
+        p.y += dy;
+    });
+
+    if (geometry.texts) {
+        geometry.texts.forEach((t: any) => {
+            // Text positions often come from AI, assume they need same transform
+            // If they were originally near points, scale/translate keeps them relative
+            if (t.x !== undefined && t.y !== undefined) {
+                t.x = t.x * scale + dx;
+                t.y = t.y * scale + dy;
+            }
+        });
+    }
+    
+    if (geometry.ellipses) {
+        geometry.ellipses.forEach((e: any) => {
+            if (e.cx !== undefined) e.cx += dx;
+            if (e.cy !== undefined) e.cy += dy;
+        });
     }
 }
 
@@ -174,12 +255,10 @@ export const parseGeometryProblem = async (
     [GEOMETRY REQUEST]
     Đề bài: "${text}"
     
-    Yêu cầu quan trọng:
-    1. Tính toán tọa độ chính xác.
-    2. NỐI CÁC ĐIỂM LẠI VỚI NHAU. Đừng để các điểm nằm rời rạc.
-       - Nếu có A, B, C -> Hãy tạo segments nối A-B, B-C, C-A.
-       - Nếu có đường tròn (O) -> Hãy tạo circle.
-    3. Trả về JSON đúng cấu trúc.
+    Yêu cầu:
+    1. Tính toán tọa độ (Canvas 1000x800).
+    2. NỐI CÁC ĐIỂM (Segments). Đừng để điểm rời rạc.
+    3. Trả về JSON.
   `;
   
   parts.push({ text: promptText });
@@ -219,20 +298,20 @@ export const parseGeometryProblem = async (
                   const result = cleanAndParseJSON(rawText);
 
                   if (!result) {
-                      throw new Error("Không tìm thấy JSON hợp lệ trong phản hồi của AI.");
+                      throw new Error("Không tìm thấy JSON hợp lệ.");
                   }
                   
                   normalizeAndResolve(result, resolve);
 
               } catch (error: any) {
-                  console.error("Lỗi xử lý kết quả từ AI:", error);
+                  console.error("Lỗi xử lý AI:", error);
                   reject(new Error("Dữ liệu trả về bị lỗi."));
               }
           }
 
           if (event.data.type === 'GEMINI_ERROR' && event.data.requestId === requestId) {
               cleanup();
-              reject(new Error(event.data.error || "Có lỗi xảy ra từ phía AI Studio."));
+              reject(new Error(event.data.error || "Lỗi AI Studio."));
           }
       };
 
@@ -279,6 +358,9 @@ function normalizeAndResolve(result: any, resolve: (value: AIResponse | PromiseL
     ensureArray('ellipses');
     ensureArray('angles');
     ensureArray('texts');
+    
+    // --- ÁP DỤNG SCALE VÀ CENTER ---
+    scaleAndCenterGeometry(g);
     
     resolve(result);
 }
