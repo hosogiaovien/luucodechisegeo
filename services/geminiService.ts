@@ -1,7 +1,7 @@
 
 import { AIResponse } from "../types";
 
-// --- ĐỊNH NGHĨA KIỂU DỮ LIỆU CHO SCHEMA (Thay thế Google GenAI Type) ---
+// --- ĐỊNH NGHĨA LẠI ENUM TYPE ĐỂ KHÔNG CẦN THƯ VIỆN @GOOGLE/GENAI ---
 const Type = {
   OBJECT: 'OBJECT',
   ARRAY: 'ARRAY',
@@ -10,26 +10,44 @@ const Type = {
   BOOLEAN: 'BOOLEAN'
 };
 
-// --- SYSTEM INSTRUCTION "CHUẨN" (Phiên bản ổn định cũ) ---
+// --- GIỮ NGUYÊN SYSTEM INSTRUCTION GỐC (BẢN TỐT NHẤT) ---
 const SYSTEM_INSTRUCTION = `
-Bạn là chuyên gia hình học GeoSmart. Nhiệm vụ của bạn là phân tích bài toán và sinh dữ liệu JSON để vẽ hình trên Canvas SVG 1000x800.
+Bạn là "GeoSmart Expert" - Chuyên gia hình học phẳng (2D) và không gian (3D) cấp Olympiad.
+Nhiệm vụ: Phân tích đề bài, giải toán và sinh dữ liệu JSON để vẽ lên canvas SVG (1000x800).
+
+--- QUY TẮC DỰNG HÌNH & TỌA ĐỘ (BẮT BUỘC) ---
 
 1. TỌA ĐỘ VÀ BỐ CỤC:
-   - Gốc tọa độ (0,0) ở góc trên trái. X tăng sang phải, Y tăng xuống dưới.
-   - Trung tâm vùng vẽ là (500, 400). Hãy vẽ hình tập trung quanh điểm này.
-   - Kích thước hình nên chiếm khoảng 50-70% canvas.
+   - Trung tâm canvas là (500, 400).
+   - Tam giác/Đa giác: Nên đặt trọng tâm gần (500, 450). Cạnh đáy nên nằm ngang.
+   - Hình không gian (Trụ, Nón, Lăng trụ, Chóp): Đặt đáy ở khoảng y=600, đỉnh ở y=200.
+   - Trục tọa độ 3D (nếu cần): O(500, 500), Ox hướng xuống trái, Oy hướng phải, Oz hướng lên.
 
-2. YÊU CẦU DỰNG HÌNH:
-   - Tính toán tọa độ (x,y) chính xác để đảm bảo các tính chất hình học (vuông góc, song song, bằng nhau).
-   - Với hình không gian (3D), các cạnh bị khuất PHẢI có thuộc tính "style": "dashed".
-   - Đáy của hình trụ/nón nên được vẽ bằng đối tượng "ellipses".
+2. QUY TẮC 2D (Tam giác, Đường tròn, Tứ giác):
+   - Tam giác ABC: A thường ở trên đỉnh, B bên trái, C bên phải.
+   - Đường cao/Trung tuyến/Phân giác: Tính toán giao điểm chính xác (Trực tâm, Trọng tâm, Tâm nội tiếp).
+   - Đường tròn ngoại tiếp/nội tiếp: Phải tính đúng tâm và bán kính.
 
-3. CẤU TRÚC DỮ LIỆU:
-   - Trả về JSON khớp hoàn toàn với Schema đã cung cấp.
-   - Các mảng (points, segments...) nếu không có dữ liệu thì để rỗng [].
+3. QUY TẮC 3D (Hình không gian):
+   - Phép chiếu: Sử dụng phép chiếu song song (oblique projection).
+   - Nét đứt (Dashed Lines): CÁC CẠNH BỊ KHUẤT PHẢI CÓ 'style': 'dashed'.
+     - Ví dụ: Hình chóp S.ABCD đáy vuông, thì cạnh AD và DC thường bị khuất (nếu nhìn từ phía trước).
+   - Đáy tròn (Trụ, Nón): Dùng 'ellipses' để vẽ đáy. Tỉ lệ rx/ry thường là 3:1 hoặc 4:1 để tạo cảm giác phối cảnh.
+     - Ví dụ: Đáy trụ tâm (500, 600), rx=100, ry=30. Nửa cung sau có thể cần chia thành 2 segment cong hoặc vẽ đè segment nét đứt (nhưng đơn giản nhất là vẽ ellipse nét liền hoặc đứt tùy ngữ cảnh).
+     - Tốt nhất với đáy trụ/nón: Vẽ 1 ellipse đáy (thường là nét đứt nếu bị che, hoặc liền nếu nhìn từ trên). Nếu cần tách biệt nửa liền nửa đứt, hãy ưu tiên vẽ ellipse liền cho đơn giản, hoặc dùng 2 cung (không hỗ trợ trong schema hiện tại nên dùng ellipse style 'solid').
+
+4. LOGIC TOÁN HỌC:
+   - Vuông góc: Nếu đề bài cho vuông góc, hãy tính tích vô hướng vector = 0.
+   - Tỷ lệ: Định lý Talet, Menelaus phải chính xác.
+
+--- CẤU TRÚC JSON ---
+Trả về JSON tuân thủ schema. Đặc biệt chú ý:
+- "ellipses": Dùng cho đáy hình trụ, nón, cầu.
+- "segments": Chứa thuộc tính "style": "dashed" cho đường khuất.
+- "explanation": Giải thích ngắn gọn cách dựng (VD: "Dựng hình chóp S.ABCD với đáy là hình bình hành...").
 `;
 
-// --- SCHEMA CHI TIẾT (Bao gồm đầy đủ các loại hình) ---
+// --- SCHEMA GỐC ---
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
   properties: {
@@ -45,10 +63,9 @@ const RESPONSE_SCHEMA = {
               x: { type: Type.NUMBER },
               y: { type: Type.NUMBER },
               label: { type: Type.STRING },
-              color: { type: Type.STRING },
-              radius: { type: Type.NUMBER }
+              color: { type: Type.STRING }
             },
-            required: ["id", "x", "y"]
+            required: ["id", "x", "y", "label"]
           }
         },
         segments: {
@@ -59,13 +76,13 @@ const RESPONSE_SCHEMA = {
               id: { type: Type.STRING },
               startPointId: { type: Type.STRING },
               endPointId: { type: Type.STRING },
-              style: { type: Type.STRING, enum: ["solid", "dashed", "dotted"] },
-              color: { type: Type.STRING },
-              label: { type: Type.STRING }
+              style: { type: Type.STRING },
+              color: { type: Type.STRING }
             },
-            required: ["id", "startPointId", "endPointId"]
+            required: ["id", "startPointId", "endPointId", "style"]
           }
         },
+        lines: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } },
         circles: {
           type: Type.ARRAY,
           items: {
@@ -91,56 +108,30 @@ const RESPONSE_SCHEMA = {
               rx: { type: Type.NUMBER },
               ry: { type: Type.NUMBER },
               rotation: { type: Type.NUMBER },
+              color: { type: Type.STRING },
               style: { type: Type.STRING }
             },
             required: ["id", "cx", "cy", "rx", "ry"]
           }
         },
-        polygons: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
-              pointIds: { type: Type.ARRAY, items: { type: Type.STRING } },
-              color: { type: Type.STRING },
-              fillColor: { type: Type.STRING },
-              style: { type: Type.STRING }
-            },
-            required: ["id", "pointIds"]
-          }
-        },
-        angles: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
+        angles: { 
+          type: Type.ARRAY, 
+          items: { 
+            type: Type.OBJECT, 
+            properties: { 
+              id: { type: Type.STRING }, 
               centerId: { type: Type.STRING },
               point1Id: { type: Type.STRING },
               point2Id: { type: Type.STRING },
               isRightAngle: { type: Type.BOOLEAN },
-              showLabel: { type: Type.BOOLEAN }
+              color: { type: Type.STRING }
             },
             required: ["id", "centerId", "point1Id", "point2Id"]
-          }
+          } 
         },
-        texts: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
-              x: { type: Type.NUMBER },
-              y: { type: Type.NUMBER },
-              text: { type: Type.STRING },
-              fontSize: { type: Type.NUMBER }
-            },
-            required: ["id", "x", "y", "text"]
-          }
-        }
+        texts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING } } } }
       },
-      required: ["points", "segments"]
+      required: ["points", "segments", "circles", "angles", "texts"]
     },
     explanation: { type: Type.STRING }
   },
@@ -153,7 +144,7 @@ export const parseGeometryProblem = async (
   mimeType: string = "image/jpeg"
 ): Promise<AIResponse> => {
   
-  // 1. Chuẩn bị nội dung gửi đi
+  // 1. Chuẩn bị nội dung
   const parts: any[] = [];
   
   if (base64Image) {
@@ -163,20 +154,27 @@ export const parseGeometryProblem = async (
   }
   
   const promptText = `
+    [GEOMETRY SOLVER REQUEST]
     Đề bài: "${text}"
-    Yêu cầu: Phân tích đề bài và trả về dữ liệu JSON để vẽ hình minh họa chính xác.
-    Tuân thủ System Instruction về tọa độ và các quy tắc vẽ hình (2D/3D).
+    
+    Yêu cầu:
+    1. Phân tích loại hình:
+       - 2D: Tam giác (thường/vuông/cân/đều), Đường tròn, Hình chữ nhật...
+       - 3D: Hình chóp, Lăng trụ, Hình trụ (Cylinder), Hình nón (Cone), Hình cầu...
+    2. Tính toán tọa độ các điểm sao cho hình vẽ cân đối trên Canvas 1000x800.
+    3. Xác định các đường nét đứt (hidden lines) cho hình 3D.
+    4. Trả về JSON đầy đủ các đối tượng.
   `;
   
   parts.push({ text: promptText });
 
-  // 2. Gửi lệnh qua Bridge (PostMessage)
+  // 2. GỬI QUA CẦU NỐI (BRIDGE)
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      const TIMEOUT = 90000; // 90 giây
+      // Tăng timeout lên 120s vì gemini-3-pro + thinking tốn nhiều thời gian suy nghĩ
+      const TIMEOUT = 120000; 
 
       const handleMessage = (event: MessageEvent) => {
-          // Chỉ nhận phản hồi đúng requestId
           if (event.data?.type === 'GEMINI_RESULT' && event.data?.requestId === requestId) {
               window.removeEventListener('message', handleMessage);
               clearTimeout(timeoutId);
@@ -185,18 +183,22 @@ export const parseGeometryProblem = async (
                   const rawPayload = event.data.payload;
                   let result;
                   
-                  // Xử lý chuỗi JSON (loại bỏ markdown block nếu có)
+                  // Xử lý chuỗi JSON
                   let jsonString = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
                   jsonString = jsonString.replace(/```json|```/g, '').trim();
                   
                   result = JSON.parse(jsonString);
                   
-                  // Đảm bảo các mảng con luôn tồn tại để tránh lỗi undefined
+                  // Helper đảm bảo mảng tồn tại (Logic từ file gốc)
+                  const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
                   if (result.geometry) {
-                      const geo = result.geometry;
-                      ['points', 'segments', 'circles', 'polygons', 'angles', 'texts', 'ellipses', 'lines', 'rays'].forEach(key => {
-                          if (!geo[key]) geo[key] = [];
-                      });
+                      ensureArray(result.geometry, 'points');
+                      ensureArray(result.geometry, 'segments');
+                      ensureArray(result.geometry, 'circles');
+                      ensureArray(result.geometry, 'ellipses');
+                      ensureArray(result.geometry, 'angles');
+                      ensureArray(result.geometry, 'texts');
+                      ensureArray(result.geometry, 'lines');
                   }
                   
                   resolve(result);
@@ -217,19 +219,20 @@ export const parseGeometryProblem = async (
 
       const timeoutId = setTimeout(() => {
           window.removeEventListener('message', handleMessage);
-          reject(new Error("Quá thời gian chờ (90s). Vui lòng thử lại."));
+          reject(new Error("Quá thời gian chờ (120s). Bài toán quá phức tạp hoặc mạng chậm."));
       }, TIMEOUT);
 
-      // Gửi cấu hình sang Parent Frame
-      // Lưu ý: Dùng model 'gemini-2.0-flash' để có tốc độ và chất lượng tốt nhất hiện tại
+      // GỬI LỆNH ĐI
+      // Quan trọng: Gửi đúng Model và Config mà bạn yêu cầu
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
           payload: {
-              model: 'gemini-2.0-flash', 
+              model: 'gemini-3-pro-preview', // Dùng model mạnh nhất
               systemInstruction: SYSTEM_INSTRUCTION,
               contents: { parts },
-              responseSchema: RESPONSE_SCHEMA
+              responseSchema: RESPONSE_SCHEMA,
+              thinkingBudget: 16000 // Config Thinking để giải toán
           }
       }, '*');
   });
