@@ -22,7 +22,7 @@ Nhiệm vụ: Phân tích đề bài, giải toán và sinh dữ liệu JSON đ�
 2. QUY TẮC 3D:
    - Các cạnh bị khuất PHẢI có thuộc tính "style": "dashed".
 3. TRẢ VỀ JSON:
-   - Chỉ trả về JSON thuần túy, không kèm markdown (nếu có thể).
+   - Chỉ trả về JSON thuần túy, KHÔNG được bọc trong markdown block (ví dụ: không dùng \`\`\`json).
 `;
 
 const RESPONSE_SCHEMA = {
@@ -115,31 +115,34 @@ const RESPONSE_SCHEMA = {
   required: ["geometry", "explanation"]
 };
 
-// Hàm trích xuất JSON thông minh từ văn bản hỗn độn
-function extractJSONFromText(text: string): any {
+// --- AGGRESSIVE JSON CLEANER ---
+// Hàm này chịu trách nhiệm "dọn rác" trong chuỗi trả về từ AI
+function cleanAndParseJSON(text: string): any {
+    if (!text || typeof text !== 'string') return null;
+    
+    let clean = text;
+
+    // 1. Loại bỏ Markdown Code Blocks (```json ... ``` hoặc ``` ... ```)
+    clean = clean.replace(/```json/gi, "").replace(/```/g, "");
+
+    // 2. Tìm khối JSON hợp lệ đầu tiên và cuối cùng (để loại bỏ lời dẫn chuyện ở đầu/cuối)
+    const firstOpen = clean.indexOf('{');
+    const lastClose = clean.lastIndexOf('}');
+    
+    if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+        clean = clean.substring(firstOpen, lastClose + 1);
+    }
+
+    // 3. Xóa các dòng comment // (AI đôi khi quen tay thêm vào dù là JSON)
+    // Lưu ý: Regex này an toàn cho JSON hình học, nhưng cẩn thận nếu URL có chứa //
+    clean = clean.replace(/^\s*\/\/.*$/gm, "");
+
     try {
-        // 1. Thử parse trực tiếp
-        return JSON.parse(text);
+        return JSON.parse(clean);
     } catch (e) {
-        // 2. Tìm kiếm cặp ngoặc nhọn ngoài cùng {}
-        const firstOpen = text.indexOf('{');
-        const lastClose = text.lastIndexOf('}');
-        
-        if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-            const potentialJson = text.substring(firstOpen, lastClose + 1);
-            try {
-                return JSON.parse(potentialJson);
-            } catch (e2) {
-                // Nếu vẫn lỗi, thử clean các ký tự lạ
-                try {
-                    const cleaned = potentialJson.replace(/[\u0000-\u001F]+/g, ""); 
-                    return JSON.parse(cleaned);
-                } catch(e3) {
-                    console.error("Failed to extract JSON", e3);
-                }
-            }
-        }
-        throw new Error("Không tìm thấy cấu trúc JSON hợp lệ trong phản hồi.");
+        console.error("JSON Parse Error:", e);
+        console.log("Failed Text:", clean);
+        return null;
     }
 }
 
@@ -168,67 +171,64 @@ export const parseGeometryProblem = async (
   
   parts.push({ text: promptText });
 
-  // --- CƠ CHẾ CẦU NỐI (BRIDGE) ---
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      // Tăng timeout lên 180s cho các model suy luận sâu
+      // Tăng timeout lên 3 phút để AI có thời gian suy nghĩ
       const TIMEOUT = 180000; 
 
+      const cleanup = () => {
+          window.removeEventListener('message', handleMessage);
+          clearTimeout(timeoutId);
+      };
+
       const handleMessage = (event: MessageEvent) => {
-          if (event.data?.type === 'GEMINI_RESULT' && event.data?.requestId === requestId) {
-              window.removeEventListener('message', handleMessage);
-              clearTimeout(timeoutId);
+          // Lọc tin nhắn rác, chỉ nhận object
+          if (!event.data || typeof event.data !== 'object') return;
+
+          if (event.data.type === 'GEMINI_RESULT' && event.data.requestId === requestId) {
+              cleanup();
               
               try {
                   const payload = event.data.payload;
                   let rawText = '';
 
-                  // --- XỬ LÝ PAYLOAD LINH HOẠT ---
+                  // --- XỬ LÝ PAYLOAD ĐA DẠNG TỪ BRIDGE ---
                   if (typeof payload === 'string') {
-                      // Trường hợp trả về chuỗi trực tiếp
                       rawText = payload;
                   } else if (payload && typeof payload === 'object') {
-                      // Trường hợp trả về cấu trúc API chuẩn của Google
+                      // Trường hợp trả về cấu trúc API chuẩn của Google (candidates -> content -> parts)
                       if (payload.candidates && payload.candidates[0]?.content?.parts?.[0]?.text) {
                           rawText = payload.candidates[0].content.parts[0].text;
                       } 
-                      // Trường hợp payload chính là JSON kết quả (do middleware parse sẵn)
+                      // Trường hợp payload chính là JSON kết quả (đã được parse bởi middleware bên ngoài)
                       else if (payload.geometry) {
-                          rawText = JSON.stringify(payload);
+                          // Đã là object mong muốn, dùng luôn
+                          normalizeAndResolve(payload, resolve);
+                          return;
                       }
-                      // Fallback: stringify cả cục
+                      // Fallback: stringify cả cục để regex tìm JSON
                       else {
                           rawText = JSON.stringify(payload);
                       }
                   }
 
-                  // Sử dụng hàm trích xuất thông minh
-                  const result = extractJSONFromText(rawText);
-                  
-                  // Đảm bảo cấu trúc Geometry luôn tồn tại
-                  if (!result.geometry) {
-                      result.geometry = { points: [], segments: [], circles: [], ellipses: [], angles: [], texts: [], lines: [] };
+                  // Parse và làm sạch chuỗi
+                  const result = cleanAndParseJSON(rawText);
+
+                  if (!result) {
+                      throw new Error("Không tìm thấy JSON hợp lệ trong phản hồi của AI.");
                   }
                   
-                  const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
-                  ensureArray(result.geometry, 'points');
-                  ensureArray(result.geometry, 'segments');
-                  ensureArray(result.geometry, 'circles');
-                  ensureArray(result.geometry, 'ellipses');
-                  ensureArray(result.geometry, 'angles');
-                  ensureArray(result.geometry, 'texts');
-                  ensureArray(result.geometry, 'lines');
-                  
-                  resolve(result);
-              } catch (error) {
-                  console.error("Lỗi xử lý kết quả từ AI (Bridge):", error);
-                  reject(new Error("Dữ liệu trả về từ AI bị lỗi hoặc không đúng định dạng."));
+                  normalizeAndResolve(result, resolve);
+
+              } catch (error: any) {
+                  console.error("Lỗi xử lý kết quả từ AI:", error);
+                  reject(new Error("Dữ liệu trả về bị lỗi hoặc không đúng định dạng."));
               }
           }
 
-          if (event.data?.type === 'GEMINI_ERROR' && event.data?.requestId === requestId) {
-              window.removeEventListener('message', handleMessage);
-              clearTimeout(timeoutId);
+          if (event.data.type === 'GEMINI_ERROR' && event.data.requestId === requestId) {
+              cleanup();
               reject(new Error(event.data.error || "Có lỗi xảy ra từ phía AI Studio."));
           }
       };
@@ -236,20 +236,21 @@ export const parseGeometryProblem = async (
       window.addEventListener('message', handleMessage);
 
       const timeoutId = setTimeout(() => {
-          window.removeEventListener('message', handleMessage);
+          cleanup();
           reject(new Error("Hết thời gian chờ (180s). Vui lòng thử lại."));
       }, TIMEOUT);
 
-      // --- GỬI POST MESSAGE (HỒN GỌI XÁC) ---
+      // --- GỬI POST MESSAGE (CẦU NỐI) ---
+      // Gửi đi cấu hình mạnh nhất để đảm bảo kết quả tốt nhất
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
           payload: {
-              model: 'gemini-3-pro-preview', 
+              model: 'gemini-3-pro-preview', // Sử dụng model xịn
               contents: [{ parts: parts }],
               config: {
                   systemInstruction: SYSTEM_INSTRUCTION,
-                  thinkingConfig: { thinkingBudget: 8192 }, // Sử dụng Thinking Budget
+                  thinkingConfig: { thinkingBudget: 8192 }, // Bật chế độ suy nghĩ sâu
                   responseMimeType: "application/json",
                   responseSchema: RESPONSE_SCHEMA,
               }
@@ -257,3 +258,29 @@ export const parseGeometryProblem = async (
       }, '*');
   });
 };
+
+// Hàm phụ trợ: Chuẩn hóa dữ liệu trước khi trả về App
+function normalizeAndResolve(result: any, resolve: (value: AIResponse | PromiseLike<AIResponse>) => void) {
+    // Nếu AI trả về thẳng object geometry mà không bọc trong root
+    if (!result.geometry && result.points) {
+        result = { geometry: result, explanation: "Đã tạo hình vẽ." };
+    }
+    
+    // Đảm bảo cấu trúc Geometry luôn tồn tại và đủ mảng
+    if (!result.geometry) {
+        result.geometry = { points: [], segments: [], circles: [], ellipses: [], angles: [], texts: [], lines: [] };
+    }
+    
+    const g = result.geometry;
+    const ensureArray = (key: string) => { if (!g[key]) g[key] = []; };
+    
+    ensureArray('points');
+    ensureArray('segments');
+    ensureArray('lines');
+    ensureArray('circles');
+    ensureArray('ellipses');
+    ensureArray('angles');
+    ensureArray('texts');
+    
+    resolve(result);
+}
