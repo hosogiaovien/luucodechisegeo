@@ -1,7 +1,7 @@
 
 import { AIResponse } from "../types";
 
-// --- TỰ ĐỊNH NGHĨA TYPE ---
+// --- TỰ ĐỊNH NGHĨA TYPE (Không import từ @google/genai) ---
 const Type = {
   OBJECT: 'OBJECT',
   ARRAY: 'ARRAY',
@@ -168,9 +168,10 @@ export const parseGeometryProblem = async (
   
   parts.push({ text: promptText });
 
+  // --- CƠ CHẾ CẦU NỐI (BRIDGE) ---
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      // Tăng timeout lên 3 phút cho các bài toán phức tạp
+      // Tăng timeout lên 180s cho các model suy luận sâu
       const TIMEOUT = 180000; 
 
       const handleMessage = (event: MessageEvent) => {
@@ -182,16 +183,26 @@ export const parseGeometryProblem = async (
                   const payload = event.data.payload;
                   let rawText = '';
 
-                  // Trích xuất text từ các cấu trúc phản hồi khác nhau
+                  // --- XỬ LÝ PAYLOAD LINH HOẠT ---
                   if (typeof payload === 'string') {
+                      // Trường hợp trả về chuỗi trực tiếp
                       rawText = payload;
-                  } else if (payload?.candidates?.[0]?.content?.parts?.[0]?.text) {
-                      rawText = payload.candidates[0].content.parts[0].text;
-                  } else {
-                      rawText = JSON.stringify(payload);
+                  } else if (payload && typeof payload === 'object') {
+                      // Trường hợp trả về cấu trúc API chuẩn của Google
+                      if (payload.candidates && payload.candidates[0]?.content?.parts?.[0]?.text) {
+                          rawText = payload.candidates[0].content.parts[0].text;
+                      } 
+                      // Trường hợp payload chính là JSON kết quả (do middleware parse sẵn)
+                      else if (payload.geometry) {
+                          rawText = JSON.stringify(payload);
+                      }
+                      // Fallback: stringify cả cục
+                      else {
+                          rawText = JSON.stringify(payload);
+                      }
                   }
 
-                  // Dùng hàm trích xuất thông minh
+                  // Sử dụng hàm trích xuất thông minh
                   const result = extractJSONFromText(rawText);
                   
                   // Đảm bảo cấu trúc Geometry luôn tồn tại
@@ -210,15 +221,15 @@ export const parseGeometryProblem = async (
                   
                   resolve(result);
               } catch (error) {
-                  console.error("Lỗi xử lý kết quả AI:", error);
-                  reject(new Error("AI trả về dữ liệu lỗi, không thể dựng hình."));
+                  console.error("Lỗi xử lý kết quả từ AI (Bridge):", error);
+                  reject(new Error("Dữ liệu trả về từ AI bị lỗi hoặc không đúng định dạng."));
               }
           }
 
           if (event.data?.type === 'GEMINI_ERROR' && event.data?.requestId === requestId) {
               window.removeEventListener('message', handleMessage);
               clearTimeout(timeoutId);
-              reject(new Error(event.data.error || "Có lỗi xảy ra kết nối AI."));
+              reject(new Error(event.data.error || "Có lỗi xảy ra từ phía AI Studio."));
           }
       };
 
@@ -226,10 +237,10 @@ export const parseGeometryProblem = async (
 
       const timeoutId = setTimeout(() => {
           window.removeEventListener('message', handleMessage);
-          reject(new Error("Hết thời gian chờ (3 phút). Bài toán quá phức tạp hoặc kết nối bị gián đoạn."));
+          reject(new Error("Hết thời gian chờ (180s). Vui lòng thử lại."));
       }, TIMEOUT);
 
-      // Gửi yêu cầu qua Bridge
+      // --- GỬI POST MESSAGE (HỒN GỌI XÁC) ---
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
@@ -238,7 +249,7 @@ export const parseGeometryProblem = async (
               contents: [{ parts: parts }],
               config: {
                   systemInstruction: SYSTEM_INSTRUCTION,
-                  thinkingConfig: { thinkingBudget: 16000 },
+                  thinkingConfig: { thinkingBudget: 8192 }, // Sử dụng Thinking Budget
                   responseMimeType: "application/json",
                   responseSchema: RESPONSE_SCHEMA,
               }
