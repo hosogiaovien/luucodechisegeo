@@ -179,30 +179,57 @@ export const parseGeometryProblem = async (
               clearTimeout(timeoutId);
               
               try {
-                  const rawPayload = event.data.payload;
-                  let result;
-                  
-                  let jsonString = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
+                  const payload = event.data.payload;
+                  let jsonString = '';
+
+                  // TRƯỜNG HỢP 1: Payload là Object phản hồi từ Gemini API (chứa candidates)
+                  if (payload && typeof payload === 'object' && payload.candidates && Array.isArray(payload.candidates) && payload.candidates.length > 0) {
+                      const parts = payload.candidates[0].content?.parts;
+                      if (parts && Array.isArray(parts) && parts.length > 0) {
+                          jsonString = parts[0].text || '';
+                      }
+                  } 
+                  // TRƯỜNG HỢP 2: Payload đã là chuỗi Text (một số bridge trả về text trực tiếp)
+                  else if (typeof payload === 'string') {
+                      jsonString = payload;
+                  }
+                  // TRƯỜNG HỢP 3: Payload là Object JSON kết quả (đã parse sẵn hoặc cấu trúc khác)
+                  else {
+                      jsonString = JSON.stringify(payload);
+                  }
+
+                  // Làm sạch chuỗi JSON (loại bỏ markdown block ```json ... ```)
                   jsonString = jsonString.replace(/```json|```/g, '').trim();
                   
-                  result = JSON.parse(jsonString);
-                  
-                  // Helper đảm bảo mảng tồn tại
-                  const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
-                  if (result.geometry) {
-                      ensureArray(result.geometry, 'points');
-                      ensureArray(result.geometry, 'segments');
-                      ensureArray(result.geometry, 'circles');
-                      ensureArray(result.geometry, 'ellipses');
-                      ensureArray(result.geometry, 'angles');
-                      ensureArray(result.geometry, 'texts');
-                      ensureArray(result.geometry, 'lines');
+                  // Parse JSON
+                  let result;
+                  try {
+                      result = JSON.parse(jsonString);
+                  } catch (e) {
+                      console.warn("Raw JSON Parse Failed, trying to fix:", jsonString.substring(0, 100));
+                      throw new Error("Không thể đọc dữ liệu JSON từ AI.");
                   }
+                  
+                  // Đảm bảo cấu trúc Geometry tồn tại
+                  if (!result.geometry) {
+                      result.geometry = { points: [], segments: [], circles: [], ellipses: [], angles: [], texts: [], lines: [] };
+                  }
+                  
+                  // Helper đảm bảo các mảng con tồn tại để tránh lỗi "Cannot read properties of undefined"
+                  const ensureArray = (obj: any, key: string) => { if (!obj[key]) obj[key] = []; };
+                  
+                  ensureArray(result.geometry, 'points');
+                  ensureArray(result.geometry, 'segments');
+                  ensureArray(result.geometry, 'circles');
+                  ensureArray(result.geometry, 'ellipses');
+                  ensureArray(result.geometry, 'angles');
+                  ensureArray(result.geometry, 'texts');
+                  ensureArray(result.geometry, 'lines');
                   
                   resolve(result);
               } catch (error) {
-                  console.error("Lỗi parse JSON từ AI:", error);
-                  reject(new Error("Dữ liệu trả về từ AI không đúng định dạng JSON."));
+                  console.error("Lỗi xử lý kết quả từ AI:", error);
+                  reject(new Error("Dữ liệu trả về từ AI bị lỗi hoặc không đúng định dạng."));
               }
           }
 
@@ -221,9 +248,6 @@ export const parseGeometryProblem = async (
       }, TIMEOUT);
 
       // --- GỬI POST MESSAGE ---
-      // Quan trọng: 
-      // 1. Dùng gemini-3-pro-preview
-      // 2. contents phải là MẢNG các Content [{parts: [...]}] để API hiểu đúng ngữ cảnh.
       window.parent.postMessage({
           type: 'DRAW_REQUEST',
           requestId,
