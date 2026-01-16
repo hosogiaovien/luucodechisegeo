@@ -26,7 +26,8 @@ Nhiệm vụ: Chuyển đổi đề bài (Text/Ảnh) thành JSON để vẽ hì
   "points": [ { "label": "A", "x": 500, "y": 200 }, ... ],
   "segments": [ { "from": "A", "to": "B" }, ... ],
   "circles": [ { "center": "O", "radiusPoint": "A" } ],
-  "angles": [ { "p1": "A", "center": "B", "p2": "C", "deg": 90 } ]
+  "angles": [ { "p1": "A", "center": "B", "p2": "C", "deg": 90 } ],
+  "texts": []
 }
 Chỉ trả về JSON. Không giải thích thêm.
 `;
@@ -35,7 +36,6 @@ Chỉ trả về JSON. Không giải thích thêm.
 function cleanAndParseJSON(text: string): any {
     if (!text || typeof text !== 'string') return null;
     
-    // 1. Tìm vị trí bắt đầu và kết thúc của JSON object thực sự
     const firstOpen = text.indexOf('{');
     const lastClose = text.lastIndexOf('}');
     
@@ -45,20 +45,17 @@ function cleanAndParseJSON(text: string): any {
 
     let clean = text.substring(firstOpen, lastClose + 1);
 
-    // 2. Sửa lỗi JSON phổ biến do AI sinh ra
     clean = clean
         .replace(/```json/g, "")
         .replace(/```/g, "")
-        .replace(/,\s*}/g, "}") // Xóa dấu phẩy thừa cuối object
-        .replace(/,\s*]/g, "]") // Xóa dấu phẩy thừa cuối array
-        .replace(/\\"/g, '"');  // Fix escape quote sai
+        .replace(/,\s*}/g, "}")
+        .replace(/,\s*]/g, "]")
+        .replace(/\\"/g, '"');
 
     try {
         return JSON.parse(clean);
     } catch (e) {
         console.error("JSON Parse Error Raw:", clean);
-        // Cố gắng cứu vãn bằng cách eval (rủi ro nhưng hiệu quả với lỗi cú pháp nhỏ)
-        // Lưu ý: Trong môi trường production thực tế nên hạn chế, nhưng ở đây dùng để fix lỗi AI
         try {
             // eslint-disable-next-line no-new-func
             return new Function(`return ${clean}`)();
@@ -72,21 +69,16 @@ function cleanAndParseJSON(text: string): any {
 function autoConnectPoints(geometry: any, text: string) {
     if (!geometry.points || !Array.isArray(geometry.points) || geometry.points.length < 2) return;
 
-    // 1. Chuẩn hóa text để tìm từ khóa
     const cleanText = text.toUpperCase().replace(/[^A-Z0-9\s]/g, " "); 
-    const pointLabels = geometry.points.map((p: any) => p.label?.toUpperCase()).filter((l:any) => l);
     const labelToId: Record<string, string> = {};
     geometry.points.forEach((p: any) => { if(p.label) labelToId[p.label.toUpperCase()] = p.id; });
 
-    // Ensure segments array exists
-    if (!geometry.segments) geometry.segments = [];
+    if (!Array.isArray(geometry.segments)) geometry.segments = [];
 
-    // Helper tạo segment
     const addSeg = (l1: string, l2: string) => {
         const id1 = labelToId[l1];
         const id2 = labelToId[l2];
         if (id1 && id2 && id1 !== id2) {
-            // Kiểm tra trùng
             const exists = geometry.segments.some((s: any) => 
                 (s.startPointId === id1 && s.endPointId === id2) || 
                 (s.startPointId === id2 && s.endPointId === id1)
@@ -104,29 +96,21 @@ function autoConnectPoints(geometry: any, text: string) {
         }
     };
 
-    // 2. Quét các chuỗi điểm liền nhau trong văn bản (VD: "TAM GIAC ABC", "HINH CHU NHAT MNPQ")
-    // Regex tìm các từ có 3-4 chữ cái in hoa liên tiếp là tên điểm
-    const potentialShapes = cleanText.match(/\b[A-Z]{3,5}\b/g) || [];
+    const potentialShapes: string[] = cleanText.match(/\b[A-Z]{3,5}\b/g) || [];
     
     potentialShapes.forEach(shapeStr => {
-        // Kiểm tra xem các ký tự trong chuỗi có phải là điểm đã tạo không
         const validPoints = shapeStr.split('').filter(char => labelToId[char]);
-        
-        // Nếu chuỗi hợp lệ (VD: "ABC" và cả A, B, C đều có trên hình)
         if (validPoints.length >= 3) {
-            // Nối vòng tròn: A-B, B-C, C-A
             for (let i = 0; i < validPoints.length; i++) {
                 addSeg(validPoints[i], validPoints[(i + 1) % validPoints.length]);
             }
         }
     });
 
-    // 3. Fallback cuối cùng: Nếu hình chưa có nét nào và có ít điểm (< 6), nối vòng tròn theo thứ tự khai báo
-    if ((!geometry.segments || geometry.segments.length === 0) && geometry.points.length >= 3 && geometry.points.length <= 6) {
+    if (geometry.segments.length === 0 && geometry.points.length >= 3 && geometry.points.length <= 6) {
         for (let i = 0; i < geometry.points.length; i++) {
             const p1 = geometry.points[i];
             const p2 = geometry.points[(i + 1) % geometry.points.length];
-            // Chỉ nối nếu chưa có
             geometry.segments.push({
                 id: generateId('s_fallback'),
                 startPointId: p1.id,
@@ -144,11 +128,9 @@ function smartScaleAndCenter(geometry: any) {
     if (!geometry.points || !Array.isArray(geometry.points) || geometry.points.length === 0) return;
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    
     const points = geometry.points;
     
     points.forEach((p: any) => {
-        // Fix string to number types safely
         p.x = Number(p.x);
         p.y = Number(p.y);
         if (p.x < minX) minX = p.x;
@@ -160,7 +142,6 @@ function smartScaleAndCenter(geometry: any) {
     let width = maxX - minX;
     let height = maxY - minY;
 
-    // A. PHÁT HIỆN TOẠ ĐỘ CHUẨN HÓA (0.0 - 1.0)
     if (width < 50 || height < 50) {
         const preScale = 100;
         points.forEach((p: any) => { p.x *= preScale; p.y *= preScale; });
@@ -171,7 +152,6 @@ function smartScaleAndCenter(geometry: any) {
         width *= preScale; height *= preScale;
     }
 
-    // B. CĂN GIỮA VÀ FIT VÀO MÀN HÌNH (800x600)
     const targetW = 600; 
     const targetH = 500;
     const targetCenterX = 500; 
@@ -199,14 +179,25 @@ function smartScaleAndCenter(geometry: any) {
     }
 }
 
+// --- HELPER: Initialize Empty Arrays ---
+const ensureArray = (obj: any, key: string) => {
+    if (!obj[key] || !Array.isArray(obj[key])) obj[key] = [];
+};
+
 function resolveIds(geometry: any) {
-    // --- CRITICAL FIX: Initialize Arrays to prevent "forEach on undefined" ---
-    if (!Array.isArray(geometry.points)) geometry.points = [];
-    if (!Array.isArray(geometry.segments)) geometry.segments = [];
-    if (!Array.isArray(geometry.circles)) geometry.circles = [];
-    if (!Array.isArray(geometry.angles)) geometry.angles = [];
+    // --- GUARANTEE ALL ARRAYS EXIST ---
+    ensureArray(geometry, 'points');
+    ensureArray(geometry, 'segments');
+    ensureArray(geometry, 'lines');
+    ensureArray(geometry, 'rays');
+    ensureArray(geometry, 'polygons');
+    ensureArray(geometry, 'circles');
+    ensureArray(geometry, 'ellipses');
+    ensureArray(geometry, 'angles');
+    ensureArray(geometry, 'texts');
+    ensureArray(geometry, 'images');
+    ensureArray(geometry, 'functionGraphs');
     
-    // Đảm bảo mọi thứ có ID và liên kết đúng
     const labelToId: Record<string, string> = {};
     
     // 1. Points
@@ -222,7 +213,7 @@ function resolveIds(geometry: any) {
         return labelToId[val.trim().toUpperCase()] || null;
     };
 
-    // 2. Segments (Convert Label -> ID)
+    // 2. Segments
     const validSegments: any[] = [];
     geometry.segments.forEach((s: any) => {
         let start = resolve(s.startPointId || s.from || s.start);
@@ -306,7 +297,8 @@ export const parseGeometryProblem = async (
       "points": [ {"label": "A", "x": 100, "y": 100}, {"label": "B", "x": 300, "y": 100}, ... ],
       "segments": [ {"from": "A", "to": "B"}, {"from": "B", "to": "C"}, ... ],
       "circles": [],
-      "angles": []
+      "angles": [],
+      "texts": []
     }
   `;
   parts.push({ text: promptText });
@@ -330,24 +322,20 @@ export const parseGeometryProblem = async (
                   let rawText = typeof payload === 'string' ? payload : 
                                 (payload.candidates?.[0]?.content?.parts?.[0]?.text || JSON.stringify(payload));
 
-                  // 1. Parse JSON
                   const result = cleanAndParseJSON(rawText);
                   if (!result) throw new Error("JSON invalid");
                   
                   if (!result.geometry && result.points) {
-                      // Nếu AI trả về flat object thay vì nested geometry
                       result.geometry = result; 
                   }
-                  if (!result.geometry) result.geometry = { points: [], segments: [] };
+                  if (!result.geometry) result.geometry = { points: [] };
 
-                  // 2. Resolve IDs (Map Label -> ID)
+                  // --- CRITICAL: Resolve IDs ensures all arrays are initialized ---
                   resolveIds(result.geometry);
 
-                  // 3. Fallback Auto-Connect (Nếu AI quên segments)
                   const fullText = (result.geometry.detected_text || "") + " " + text;
                   autoConnectPoints(result.geometry, fullText);
 
-                  // 4. Smart Scale (Phóng to nếu hình bé)
                   smartScaleAndCenter(result.geometry);
                   
                   resolve({
@@ -374,7 +362,6 @@ export const parseGeometryProblem = async (
           reject(new Error("Hết thời gian chờ (5 phút)."));
       }, TIMEOUT);
 
-      // Gửi yêu cầu ra ngoài (giả lập môi trường AI Studio)
       if (window.parent && window.parent !== window) {
           window.parent.postMessage({
               type: 'DRAW_REQUEST',
@@ -390,7 +377,6 @@ export const parseGeometryProblem = async (
               }
           }, '*');
       } else {
-          // Fallback cho môi trường dev local
           reject(new Error("Vui lòng chạy trong môi trường tích hợp AI."));
       }
   });
