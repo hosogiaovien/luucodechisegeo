@@ -325,7 +325,7 @@ export const parseGeometryProblem = async (
 
   return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
-      const TIMEOUT = 60000; 
+      const TIMEOUT = 300000; // 5 phút
 
       const cleanup = () => {
           window.removeEventListener('message', handleMessage);
@@ -384,7 +384,7 @@ export const parseGeometryProblem = async (
       
       const timeoutId = setTimeout(() => {
           cleanup();
-          reject(new Error("Hết thời gian chờ (60s)."));
+          reject(new Error("Hết thời gian chờ (5 phút)."));
       }, TIMEOUT);
 
       // Gửi yêu cầu ra ngoài (giả lập môi trường AI Studio)
