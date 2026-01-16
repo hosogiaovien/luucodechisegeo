@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Sparkles, Image as ImageIcon, Loader2, Info, X, ClipboardPaste, Clipboard, Calculator, Lightbulb, Camera, Video, StopCircle, UploadCloud } from 'lucide-react';
+import { Sparkles, Image as ImageIcon, Loader2, Info, X, Calculator, Camera } from 'lucide-react';
 import { parseGeometryProblem } from '../services/geminiService';
 import { GeometryData } from '../types';
 
@@ -17,17 +17,16 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
   const [loadingStatus, setLoadingStatus] = useState('');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [showCamera, setShowCamera] = useState(false);
-  const [isDragging, setIsDragging] = useState(false); // Drag state
+  const [isDragging, setIsDragging] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null); // Ref for panel focus
+  const panelRef = useRef<HTMLDivElement>(null);
   
   const [error, setError] = useState<string | null>(null);
   const [explanation, setExplanation] = useState<string | null>(null);
 
-  // Unified Paste Handler
   const handlePaste = useCallback((e: ClipboardEvent | React.ClipboardEvent) => {
       const items = 'clipboardData' in e ? e.clipboardData.items : (e as any).originalEvent?.clipboardData?.items;
       if (!items) return;
@@ -45,14 +44,13 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
               }
             };
             reader.readAsDataURL(file);
-            e.preventDefault(); // Stop text paste if image found
+            e.preventDefault(); 
             return;
           }
         }
       }
   }, []);
 
-  // Global paste listener (backup) + Focus management
   useEffect(() => {
     if (isOpen) {
         window.addEventListener('paste', handlePaste as any);
@@ -66,27 +64,31 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
       let interval: ReturnType<typeof setInterval>;
       if (isLoading) {
           setLoadingProgress(0);
-          setLoadingStatus("Đang giải hệ phương trình tọa độ...");
+          setLoadingStatus("Đang khởi động tư duy hình học...");
+          
           const statuses = [
-              { p: 15, t: "Phân tích các tiếp điểm (A, B, C)..." },
-              { p: 35, t: "Áp dụng định lý tiếp tuyến cắt nhau..." },
-              { p: 55, t: "Tính toán giao điểm M và N..." },
-              { p: 75, t: "Kiểm tra tính vuông góc và bán kính..." },
-              { p: 90, t: "Hoàn thiện bản vẽ SVG..." }
+              { p: 5, t: "Đang phân tích đề bài & nhận diện hình ảnh..." },
+              { p: 15, t: "Đang thiết lập hệ trục tọa độ..." },
+              { p: 30, t: "Đang tính toán các điểm (Thinking Process)..." },
+              { p: 50, t: "Đang giải hệ phương trình giao điểm..." },
+              { p: 70, t: "Kiểm tra tính logic của các điểm..." },
+              { p: 85, t: "Đang tạo dữ liệu JSON..." },
+              { p: 95, t: "Hoàn tất..." }
           ];
+          
           let step = 0;
           interval = setInterval(() => {
               setLoadingProgress(prev => {
                   const target = statuses[step] ? statuses[step].p : 99;
                   if (prev < target) {
-                       return prev + 0.2; 
+                       return prev + 0.5; 
                   } else {
                        if (statuses[step]) setLoadingStatus(statuses[step].t);
                        if (step < statuses.length - 1) step++;
-                       return prev;
+                       return prev; 
                   }
               });
-          }, 100);
+          }, 800); 
       } else {
           setLoadingProgress(100);
       }
@@ -108,7 +110,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
       reader.readAsDataURL(file);
   };
 
-  // Drag and Drop Handlers
   const handleDragOver = (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(true);
@@ -152,7 +153,6 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
     if (videoRef.current && canvasRef.current) {
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        // Set canvas dimensions to match video
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         
@@ -188,10 +188,7 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
       
       const geom = response.geometry;
       
-      // KIỂM TRA QUAN TRỌNG: Nếu không có điểm nào, coi như thất bại
-      if (geom && geom.points && geom.points.length > 0) {
-          
-          // --- CENTERING LOGIC ---
+      if (geom && geom.points && Array.isArray(geom.points) && geom.points.length > 0) {
           let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
           geom.points.forEach(p => {
               if (p.x < minX) minX = p.x;
@@ -203,21 +200,26 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
           if (minX !== Infinity) {
               const centerX = (minX + maxX) / 2;
               const centerY = (minY + maxY) / 2;
-              // Dịch chuyển toàn bộ điểm về gốc (0,0)
               geom.points.forEach(p => { p.x -= centerX; p.y -= centerY; });
-              geom.texts.forEach(t => { t.x -= centerX; t.y -= centerY; });
-              if (geom.images) geom.images.forEach(img => { img.x -= centerX; img.y -= centerY; });
-              if (geom.functionGraphs) geom.functionGraphs.forEach(g => { 
-                  if(g.labelX !== undefined) g.labelX -= centerX; 
-                  if(g.labelY !== undefined) g.labelY -= centerY; 
-              });
+              
+              // SAFEGUARDS
+              if (geom.texts && Array.isArray(geom.texts)) {
+                  geom.texts.forEach(t => { t.x -= centerX; t.y -= centerY; });
+              }
+              if (geom.images && Array.isArray(geom.images)) {
+                  geom.images.forEach(img => { img.x -= centerX; img.y -= centerY; });
+              }
+              if (geom.functionGraphs && Array.isArray(geom.functionGraphs)) {
+                  geom.functionGraphs.forEach(g => { 
+                      if(g.labelX !== undefined) g.labelX -= centerX; 
+                      if(g.labelY !== undefined) g.labelY -= centerY; 
+                  });
+              }
           }
-          // -----------------------
 
           setGeometryData(geom);
           setExplanation(response.explanation || "Đã hoàn tất dựng hình.");
       } else {
-          // Trường hợp AI trả lời nhưng không có hình
           if (response.explanation) {
               setExplanation(response.explanation + "\n\n(Lưu ý: AI không tìm thấy đối tượng hình học nào để vẽ)");
           } else {
@@ -365,7 +367,7 @@ const InputPanel: React.FC<InputPanelProps> = ({ setGeometryData, isOpen, onClos
               className="w-full bg-slate-900 hover:bg-black text-white font-black py-4 rounded-2xl shadow-xl transition-all flex items-center justify-center gap-3 disabled:opacity-50 active:scale-95 text-sm uppercase tracking-widest"
             >
               {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Sparkles size={20} />}
-              {isLoading ? 'Đang giải toán...' : 'Dựng Hình Ngay'}
+              {isLoading ? 'Đang suy nghĩ (3-5 phút)...' : 'Dựng Hình Ngay'}
             </button>
         </div>
 
