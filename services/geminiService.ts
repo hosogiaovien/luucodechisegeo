@@ -70,13 +70,16 @@ function cleanAndParseJSON(text: string): any {
 
 // --- HEURISTIC ENGINE: TỰ ĐỘNG NỐI ĐIỂM (CỨU CÁNH) ---
 function autoConnectPoints(geometry: any, text: string) {
-    if (!geometry.points || geometry.points.length < 2) return;
+    if (!geometry.points || !Array.isArray(geometry.points) || geometry.points.length < 2) return;
 
     // 1. Chuẩn hóa text để tìm từ khóa
     const cleanText = text.toUpperCase().replace(/[^A-Z0-9\s]/g, " "); 
     const pointLabels = geometry.points.map((p: any) => p.label?.toUpperCase()).filter((l:any) => l);
     const labelToId: Record<string, string> = {};
     geometry.points.forEach((p: any) => { if(p.label) labelToId[p.label.toUpperCase()] = p.id; });
+
+    // Ensure segments array exists
+    if (!geometry.segments) geometry.segments = [];
 
     // Helper tạo segment
     const addSeg = (l1: string, l2: string) => {
@@ -138,12 +141,10 @@ function autoConnectPoints(geometry: any, text: string) {
 
 // --- SCALING ENGINE: PHÓNG TO HÌNH BÉ ---
 function smartScaleAndCenter(geometry: any) {
-    if (!geometry.points || geometry.points.length === 0) return;
+    if (!geometry.points || !Array.isArray(geometry.points) || geometry.points.length === 0) return;
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     
-    // Lọc bỏ điểm rác (0,0) nếu đa số điểm khác nằm xa
-    // Hoặc nếu tất cả đều nhỏ (0-1) thì giữ nguyên để scale sau
     const points = geometry.points;
     
     points.forEach((p: any) => {
@@ -160,30 +161,28 @@ function smartScaleAndCenter(geometry: any) {
     let height = maxY - minY;
 
     // A. PHÁT HIỆN TOẠ ĐỘ CHUẨN HÓA (0.0 - 1.0)
-    // Nếu hình quá bé (dưới 10px), chắc chắn là toạ độ chuẩn hóa -> Phóng to 100 lần trước
     if (width < 50 || height < 50) {
         const preScale = 100;
         points.forEach((p: any) => { p.x *= preScale; p.y *= preScale; });
-        if (geometry.circles) geometry.circles.forEach((c: any) => { if(c.radiusValue) c.radiusValue *= preScale; });
-        // Recalculate bounds
+        if (geometry.circles && Array.isArray(geometry.circles)) {
+             geometry.circles.forEach((c: any) => { if(c.radiusValue) c.radiusValue *= preScale; });
+        }
         minX *= preScale; maxX *= preScale; minY *= preScale; maxY *= preScale;
         width *= preScale; height *= preScale;
     }
 
     // B. CĂN GIỮA VÀ FIT VÀO MÀN HÌNH (800x600)
-    // Target Box
     const targetW = 600; 
     const targetH = 500;
-    const targetCenterX = 500; // Canvas center X (1000/2)
-    const targetCenterY = 400; // Canvas center Y (800/2)
+    const targetCenterX = 500; 
+    const targetCenterY = 400; 
 
-    // Tránh chia cho 0
     if (width < 1) width = 100;
     if (height < 1) height = 100;
 
     const scaleX = targetW / width;
     const scaleY = targetH / height;
-    const scale = Math.min(scaleX, scaleY, 5); // Max scale 5x để tránh phóng quá đại
+    const scale = Math.min(scaleX, scaleY, 5); 
 
     const currentCenterX = (minX + maxX) / 2;
     const currentCenterY = (minY + maxY) / 2;
@@ -193,8 +192,7 @@ function smartScaleAndCenter(geometry: any) {
         p.y = (p.y - currentCenterY) * scale + targetCenterY;
     });
 
-    // Scale bán kính đường tròn (nếu là số cố định)
-    if (geometry.circles) {
+    if (geometry.circles && Array.isArray(geometry.circles)) {
         geometry.circles.forEach((c: any) => { 
             if (c.radiusValue) c.radiusValue *= scale; 
         });
@@ -202,6 +200,12 @@ function smartScaleAndCenter(geometry: any) {
 }
 
 function resolveIds(geometry: any) {
+    // --- CRITICAL FIX: Initialize Arrays to prevent "forEach on undefined" ---
+    if (!Array.isArray(geometry.points)) geometry.points = [];
+    if (!Array.isArray(geometry.segments)) geometry.segments = [];
+    if (!Array.isArray(geometry.circles)) geometry.circles = [];
+    if (!Array.isArray(geometry.angles)) geometry.angles = [];
+    
     // Đảm bảo mọi thứ có ID và liên kết đúng
     const labelToId: Record<string, string> = {};
     
@@ -209,84 +213,69 @@ function resolveIds(geometry: any) {
     geometry.points.forEach((p: any, idx: number) => {
         if (!p.id) p.id = generateId(`p_${idx}`);
         if (p.label) labelToId[p.label.trim().toUpperCase()] = p.id;
-        // Mặc định màu đen nếu thiếu
         if (!p.color) p.color = 'black';
     });
 
     const resolve = (val: string) => {
         if (!val) return null;
-        // Nếu là ID có sẵn (do mình tạo)
         if (geometry.points.some((p:any) => p.id === val)) return val;
-        // Nếu là Label (A, B, C) -> Map sang ID
         return labelToId[val.trim().toUpperCase()] || null;
     };
 
     // 2. Segments (Convert Label -> ID)
-    if (geometry.segments) {
-        const validSegments: any[] = [];
-        geometry.segments.forEach((s: any) => {
-            // AI có thể trả về {from: "A", to: "B"} hoặc {startPointId: "A", ...}
-            let start = resolve(s.startPointId || s.from || s.start);
-            let end = resolve(s.endPointId || s.to || s.end);
-            
-            if (start && end) {
-                if (!s.id) s.id = generateId('s');
-                s.startPointId = start;
-                s.endPointId = end;
-                s.style = s.style || 'solid';
-                s.color = s.color || 'black';
-                s.strokeWidth = s.strokeWidth || 1.5;
-                validSegments.push(s);
-            }
-        });
-        geometry.segments = validSegments;
-    } else {
-        geometry.segments = [];
-    }
+    const validSegments: any[] = [];
+    geometry.segments.forEach((s: any) => {
+        let start = resolve(s.startPointId || s.from || s.start);
+        let end = resolve(s.endPointId || s.to || s.end);
+        
+        if (start && end) {
+            if (!s.id) s.id = generateId('s');
+            s.startPointId = start;
+            s.endPointId = end;
+            s.style = s.style || 'solid';
+            s.color = s.color || 'black';
+            s.strokeWidth = s.strokeWidth || 1.5;
+            validSegments.push(s);
+        }
+    });
+    geometry.segments = validSegments;
 
     // 3. Circles
-    if (geometry.circles) {
-        const validCircles: any[] = [];
-        geometry.circles.forEach((c: any) => {
-            const center = resolve(c.centerId || c.center);
-            const radiusP = resolve(c.radiusPointId || c.radiusPoint);
-            
-            if (center) {
-                if (!c.id) c.id = generateId('c');
-                c.centerId = center;
-                if (radiusP) c.radiusPointId = radiusP;
-                if (!c.radiusValue && !c.radiusPointId) c.radiusValue = 100; // Mặc định
-                c.color = c.color || 'black';
-                validCircles.push(c);
-            }
-        });
-        geometry.circles = validCircles;
-    } else {
-        geometry.circles = [];
-    }
+    const validCircles: any[] = [];
+    geometry.circles.forEach((c: any) => {
+        const center = resolve(c.centerId || c.center);
+        const radiusP = resolve(c.radiusPointId || c.radiusPoint);
+        
+        if (center) {
+            if (!c.id) c.id = generateId('c');
+            c.centerId = center;
+            if (radiusP) c.radiusPointId = radiusP;
+            if (!c.radiusValue && !c.radiusPointId) c.radiusValue = 100;
+            c.color = c.color || 'black';
+            validCircles.push(c);
+        }
+    });
+    geometry.circles = validCircles;
     
     // 4. Angles
-    if (geometry.angles) {
-        const validAngles: any[] = [];
-        geometry.angles.forEach((a: any) => {
-            // format: {p1:"A", center:"B", p2:"C"}
-            const p1 = resolve(a.p1 || a.point1Id);
-            const center = resolve(a.center || a.centerId);
-            const p2 = resolve(a.p2 || a.point2Id);
-            if (p1 && center && p2) {
-                validAngles.push({
-                    id: generateId('ang'),
-                    point1Id: p1,
-                    centerId: center,
-                    point2Id: p2,
-                    isRightAngle: a.deg === 90 || a.isRightAngle,
-                    showLabel: true,
-                    color: 'black'
-                });
-            }
-        });
-        geometry.angles = validAngles;
-    }
+    const validAngles: any[] = [];
+    geometry.angles.forEach((a: any) => {
+        const p1 = resolve(a.p1 || a.point1Id);
+        const center = resolve(a.center || a.centerId);
+        const p2 = resolve(a.p2 || a.point2Id);
+        if (p1 && center && p2) {
+            validAngles.push({
+                id: generateId('ang'),
+                point1Id: p1,
+                centerId: center,
+                point2Id: p2,
+                isRightAngle: a.deg === 90 || a.isRightAngle,
+                showLabel: true,
+                color: 'black'
+            });
+        }
+    });
+    geometry.angles = validAngles;
 }
 
 export const parseGeometryProblem = async (
@@ -300,7 +289,6 @@ export const parseGeometryProblem = async (
     parts.push({ inlineData: { mimeType, data: base64Image } });
   }
   
-  // Prompt cực mạnh để ép AI trả về Segment
   const promptText = `
     TASK: Phân tích đề bài hình học (Text hoặc Ảnh) -> JSON.
     INPUT TEXT: "${text || "Đọc từ ảnh"}"
@@ -356,7 +344,6 @@ export const parseGeometryProblem = async (
                   resolveIds(result.geometry);
 
                   // 3. Fallback Auto-Connect (Nếu AI quên segments)
-                  // Kết hợp text nhận diện được từ AI và text người dùng nhập
                   const fullText = (result.geometry.detected_text || "") + " " + text;
                   autoConnectPoints(result.geometry, fullText);
 
@@ -398,12 +385,12 @@ export const parseGeometryProblem = async (
                   config: {
                       systemInstruction: SYSTEM_INSTRUCTION,
                       responseMimeType: "application/json",
-                      thinkingConfig: { thinkingBudget: 4096 } // Thinking giúp AI suy luận hình tốt hơn
+                      thinkingConfig: { thinkingBudget: 4096 }
                   }
               }
           }, '*');
       } else {
-          // Fallback cho môi trường dev local (nếu không có parent frame)
+          // Fallback cho môi trường dev local
           reject(new Error("Vui lòng chạy trong môi trường tích hợp AI."));
       }
   });
